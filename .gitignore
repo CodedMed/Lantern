@@ -31,6 +31,17 @@ Thumbs.db
 .env.test.local
 .env.production.local
 
+# Python virtual environments
+lanternenv/
+lanternenv2/
+venv/
+env/
+
+# Expo
+.expo/
+.expo-shared/
+web-build/
+
 # npm package manager files
 package-lock.json
 yarn.lock

@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Lantern",
+    "slug": "lantern",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a2e"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.lantern.app"
+    },
+    "android": {
+      "package": "com.lantern.app",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Lantern to access your camera to identify surroundings and obstacles."
+        }
+      ]
+    ]
+  }
+}
