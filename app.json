@@ -26,6 +26,12 @@
         {
           "cameraPermission": "Allow Lantern to access your camera to identify surroundings and obstacles."
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Lantern to record voice commands for navigation."
+        }
       ]
     ]
   }
