@@ -21,7 +21,6 @@ import {
   Dimensions,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useAudioRecorder, AudioModule, RecordingPresets } from 'expo-audio';
 import { Audio } from 'expo-av';
 import * as Speech from 'expo-speech';
 import { Accelerometer } from 'expo-sensors';
@@ -42,7 +41,7 @@ export default function CameraScreen({ navigation }) {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [microphonePermission, setMicrophonePermission] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recordingRef = useRef(null);
   const [facing, setFacing] = useState('back');
   const [busy, setBusy] = useState(false);
   const [tfReady, setTfReady] = useState(false);
@@ -99,9 +98,9 @@ export default function CameraScreen({ navigation }) {
           await requestCameraPermission();
         }
         
-        // Request microphone permission first
-        const mic = await AudioModule.requestRecordingPermissionsAsync();
-        setMicrophonePermission(mic.granted);
+  // Request microphone permission first using expo-av
+  const mic = await Audio.requestPermissionsAsync();
+  setMicrophonePermission(mic.granted);
         
         // Configure audio mode for recording using expo-av Audio module
         // MUST be set before any recording attempts
@@ -326,14 +325,22 @@ export default function CameraScreen({ navigation }) {
       
       // Stop any ongoing speech (prevents audio conflicts on iOS)
       Speech.stop();
-      
+
       // Small delay to ensure audio mode is ready
       await new Promise(resolve => setTimeout(resolve, 100));
-      
-      await audioRecorder.prepareToRecordAsync();
-      await audioRecorder.record();
-      setIsRecording(true);
-      console.log('Recording started successfully');
+
+      // Create and start a new Recording using expo-av
+      const recording = new Audio.Recording();
+      try {
+        await recording.prepareToRecordAsync(Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY);
+        await recording.startAsync();
+        recordingRef.current = recording;
+        setIsRecording(true);
+        console.log('Recording started successfully');
+      } catch (recErr) {
+        console.error('Recording start failed', recErr);
+        setIsRecording(false);
+      }
       
       // Don't speak "Recording" - it interferes with mic
     } catch (e) {
@@ -344,10 +351,11 @@ export default function CameraScreen({ navigation }) {
   };
 
   const stopRecording = async () => {
-    if (!audioRecorder.isRecording) return;
+    const recording = recordingRef.current;
+    if (!recording) return;
     try {
-      await audioRecorder.stop();
-      const uri = audioRecorder.uri;
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
       setIsRecording(false);
       speak('Processing voice command');
       const text = await sendAudioForTranscription(uri);
