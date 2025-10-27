@@ -1,6 +1,13 @@
 /*
  * CameraScreen - Object Detection Navigation for Visually Impaired
  * 
+ * FIXES APPLIED:
+ * 1. Removed skipProcessing flag - was causing orientation/quality issues
+ * 2. Increased image quality to 0.85 for better detection
+ * 3. Added comprehensive logging for debugging
+ * 4. Added detection validation and fallback handling
+ * 5. Improved error messages
+ * 
  * IMPLEMENTATION:
  * - TensorFlow.js React Native with COCO-SSD (MobileNet-SSD backbone)
  * - Real-time object detection (90 COCO classes)
@@ -49,6 +56,7 @@ export default function CameraScreen({ navigation }) {
   const [sceneModel, setSceneModel] = useState(null);
   const [lastNavCommand, setLastNavCommand] = useState(null);
   const [imageSize, setImageSize] = useState({ width: 640, height: 480 });
+  const [debugInfo, setDebugInfo] = useState('');
   
   // Movement detection state
   const [isMoving, setIsMoving] = useState(false);
@@ -238,10 +246,11 @@ export default function CameraScreen({ navigation }) {
     try {
       lastScanTime.current = Date.now();
       
+      // FIXED: Removed skipProcessing and increased quality
       const photo = await cameraRef.current.takePictureAsync({ 
-        quality: 0.7,
+        quality: 0.85,  // Increased from 0.7 for better detection
         base64: false,
-        skipProcessing: true
+        // skipProcessing removed - was causing orientation issues
       });
       
       const navCommand = await analyzeImageForNavigation(photo.uri, photo.width, photo.height);
@@ -292,11 +301,14 @@ export default function CameraScreen({ navigation }) {
     setBusy(true);
     speak('Scanning environment');
     try {
+      // FIXED: Removed skipProcessing and increased quality for better detection
       const photo = await cameraRef.current.takePictureAsync({ 
-        quality: 0.7,
+        quality: 0.85,  // Increased from 0.7
         base64: false,
-        skipProcessing: true
+        // skipProcessing: true REMOVED - was causing detection issues
       });
+      
+      console.log('Photo captured:', photo.width, 'x', photo.height);
       
       // Perform object detection and navigation analysis
       const navCommand = await analyzeImageForNavigation(photo.uri, photo.width, photo.height);
@@ -311,6 +323,7 @@ export default function CameraScreen({ navigation }) {
     } catch (e) {
       console.error('Analysis error:', e);
       speak('Analysis failed');
+      setDebugInfo(`Error: ${e.message}`);
     }
     setBusy(false);
   };
@@ -396,12 +409,16 @@ export default function CameraScreen({ navigation }) {
         throw new Error('Model not loaded');
       }
 
-      console.log('Analyzing image:', imageUri);
+      console.log('========================================');
+      console.log('Starting image analysis:', imageUri);
+      console.log('Photo dimensions:', imgWidth, 'x', imgHeight);
       
       // Read the image file as base64
       const imgB64 = await FileSystem.readAsStringAsync(imageUri, {
         encoding: 'base64',
       });
+      
+      console.log('Image loaded, size:', imgB64.length, 'bytes');
       
       // Convert base64 to Uint8Array
       const binaryString = atob(imgB64);
@@ -411,16 +428,33 @@ export default function CameraScreen({ navigation }) {
         bytes[i] = binaryString.charCodeAt(i);
       }
       
+      console.log('Image converted to bytes:', bytes.length);
+      
       // Decode JPEG to tensor
       const imageTensor = decodeJpeg(bytes);
       const [height, width] = imageTensor.shape;
+      
+      console.log('Tensor created:', width, 'x', height);
       
       // Update image size for distance estimation
       setImageSize({ width, height });
       
       // Run COCO-SSD object detection
+      console.log('Running object detection...');
       const predictions = await model.detect(imageTensor);
-      console.log(`Detected ${predictions.length} objects`);
+      console.log('========================================');
+      console.log(`RAW DETECTION: ${predictions.length} objects detected`);
+      
+      if (predictions.length > 0) {
+        console.log('Detected objects:');
+        predictions.forEach((pred, idx) => {
+          console.log(`  ${idx + 1}. ${pred.class} (${(pred.score * 100).toFixed(1)}%) at [${pred.bbox.map(v => v.toFixed(0)).join(', ')}]`);
+        });
+      } else {
+        console.log('⚠️ WARNING: No objects detected in image!');
+        setDebugInfo(`No objects detected. Try pointing at common objects (person, chair, car, etc.)`);
+      }
+      console.log('========================================');
       
       // Run DeepLab scene segmentation (if model loaded)
       let sceneInfo = null;
@@ -446,8 +480,27 @@ export default function CameraScreen({ navigation }) {
         ]
       }));
       
+      console.log('Analyzing obstacles with ROI filter...');
+      
       // Analyze obstacles and generate navigation command
-      const obstacles = analyzeObstacles(detections, { width, height }, 0.5);
+      // Using 0.4 confidence threshold (lowered from 0.5 for better detection)
+      const obstacles = analyzeObstacles(detections, { width, height }, 0.4);
+      
+      console.log(`After ROI filtering: ${obstacles.length} obstacles in walking path`);
+      
+      if (obstacles.length > 0) {
+        console.log('Obstacles in path:');
+        obstacles.forEach((obs, idx) => {
+          console.log(`  ${idx + 1}. ${obs.class} - ${obs.position} - ${obs.distance.toFixed(1)}m`);
+        });
+      } else {
+        console.log('⚠️ No obstacles in ROI (walking path)');
+        if (predictions.length > 0) {
+          console.log('Objects were detected but filtered out by ROI');
+          setDebugInfo(`Detected ${predictions.length} objects, but none in walking path`);
+        }
+      }
+      
       const navCommand = generateNavigationCommand(obstacles);
       
       // Enhance navigation command with scene context
@@ -455,17 +508,30 @@ export default function CameraScreen({ navigation }) {
         enhanceNavigationWithScene(navCommand, sceneInfo);
       }
       
+      // Add debug info to command
+      navCommand.debugInfo = {
+        totalDetections: predictions.length,
+        obstaclesInROI: obstacles.length,
+        imageSize: { width, height }
+      };
+      
+      // Update debug display
+      setDebugInfo(`Detected: ${predictions.length} | In path: ${obstacles.length}`);
+      
       // Clean up tensors
       imageTensor.dispose();
       
-      console.log('Navigation command:', navCommand);
+      console.log('Navigation command:', navCommand.command, '-', navCommand.message);
+      console.log('========================================');
       
       return navCommand;
     } catch (error) {
       console.error('Detection error:', error);
+      console.error('Stack:', error.stack);
+      setDebugInfo(`Error: ${error.message}`);
       return {
         command: 'ERROR',
-        speech: 'Unable to analyze environment',
+        speech: 'Unable to analyze environment. Check console for details.',
         obstacles: []
       };
     }
@@ -626,6 +692,13 @@ export default function CameraScreen({ navigation }) {
         )}
       </View>
 
+      {/* Debug Info */}
+      {debugInfo && (
+        <View style={styles.debugInfo}>
+          <Text style={styles.debugText}>{debugInfo}</Text>
+        </View>
+      )}
+
       {/* Navigation Status Display */}
       {lastNavCommand && (
         <View style={styles.navStatus}>
@@ -639,6 +712,11 @@ export default function CameraScreen({ navigation }) {
           {lastNavCommand.obstacles && lastNavCommand.obstacles.length > 0 && (
             <Text style={styles.navDetails}>
               {lastNavCommand.obstacles.length} obstacle{lastNavCommand.obstacles.length > 1 ? 's' : ''} detected
+            </Text>
+          )}
+          {lastNavCommand.debugInfo && (
+            <Text style={styles.navDetails}>
+              Total: {lastNavCommand.debugInfo.totalDetections} | Path: {lastNavCommand.debugInfo.obstaclesInROI}
             </Text>
           )}
         </View>
@@ -710,9 +788,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  debugInfo: {
+    position: 'absolute',
+    top: 90,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(255,152,0,0.9)',
+    padding: 8,
+    borderRadius: 8,
+  },
+  debugText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
   navStatus: { 
     position: 'absolute', 
-    top: 100, 
+    top: 130, 
     left: 16, 
     right: 16, 
     backgroundColor: 'rgba(0,0,0,0.85)', 

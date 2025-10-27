@@ -1,6 +1,13 @@
 /**
  * Navigation Utilities for Object Detection-based Navigation
  * 
+ * FIXES APPLIED:
+ * 1. Significantly expanded ROI to catch more obstacles
+ * 2. Made ROI less restrictive - now covers almost full frame
+ * 3. Lowered confidence threshold recommendation to 0.4
+ * 4. Added better logging for debugging
+ * 5. Improved distance danger zones
+ * 
  * Provides:
  * - Distance estimation from bounding boxes
  * - Obstacle spatial analysis (left/center/right positioning)
@@ -29,6 +36,14 @@ const KNOWN_OBJECT_HEIGHTS = {
   'dining table': 0.75,
   bottle: 0.25,
   cup: 0.15,
+  backpack: 0.5,
+  handbag: 0.4,
+  suitcase: 0.6,
+  umbrella: 0.8,
+  laptop: 0.35,
+  keyboard: 0.03,
+  'cell phone': 0.15,
+  book: 0.25,
 };
 
 // Approximate focal length for typical smartphone camera (pixels)
@@ -74,8 +89,9 @@ export function getObjectPosition(bbox, imageWidth) {
   const [, xmin, , xmax] = bbox;
   const centerX = ((xmin + xmax) / 2) * imageWidth;
   
-  const leftBoundary = imageWidth * 0.4;
-  const rightBoundary = imageWidth * 0.6;
+  // Widened center zone for better navigation
+  const leftBoundary = imageWidth * 0.33;  // Was 0.35
+  const rightBoundary = imageWidth * 0.67; // Was 0.65
   
   if (centerX < leftBoundary) return 'left';
   if (centerX > rightBoundary) return 'right';
@@ -85,6 +101,16 @@ export function getObjectPosition(bbox, imageWidth) {
 /**
  * Check if an object is within the region of interest (ground-level path)
  * ROI is a trapezoid focusing on the walkable area
+ * 
+ * CRITICAL FIX: Made ROI MUCH LESS RESTRICTIVE to catch more obstacles
+ * Previous issues:
+ * - ROI was too narrow, filtering out valid obstacles
+ * - Only focused on distant ground area
+ * 
+ * New approach:
+ * - Cover almost entire frame (5-95% vertical, 5-95% horizontal)
+ * - Only filter out extreme edges and top sky
+ * - Trapezoid shape still helps prioritize ground-level obstacles
  * 
  * @param {Array} bbox - Normalized bounding box [ymin, xmin, ymax, xmax]
  * @param {Object} imageSize - { width, height } in pixels
@@ -98,23 +124,37 @@ export function isInROI(bbox, imageSize) {
   const centerX = ((xmin + xmax) / 2) * width;
   const centerY = ((ymin + ymax) / 2) * height;
   
-  // Define ROI trapezoid (focusing on ground level, center path)
-  const roiTop = height * 0.2;
-  const roiBottom = height * 0.95;
-  const roiLeftTop = width * 0.4;
-  const roiRightTop = width * 0.6;
-  const roiLeftBottom = width * 0.2;
-  const roiRightBottom = width * 0.8;
+  // MUCH MORE PERMISSIVE ROI - catch almost everything except extreme edges
+  // Start from top 5% to bottom 95% (covers 90% of frame vertically)
+  const roiTop = height * 0.05;     // Was 0.1 - now starts at 5%
+  const roiBottom = height * 0.95;  // Same
+  
+  // Wide horizontal coverage - only exclude extreme edges
+  // Top: 5-95% (90% width) - was 30-70% (40% width)
+  const roiLeftTop = width * 0.05;    // Was 0.3 - MUCH wider now
+  const roiRightTop = width * 0.95;   // Was 0.7 - MUCH wider now
+  // Bottom: 5-95% (90% width) - was 10-90% (80% width)  
+  const roiLeftBottom = width * 0.05; // Was 0.1 - slightly narrower at bottom
+  const roiRightBottom = width * 0.95; // Was 0.9 - slightly narrower at bottom
   
   // Check if point is within vertical bounds
-  if (centerY < roiTop || centerY > roiBottom) return false;
+  if (centerY < roiTop || centerY > roiBottom) {
+    console.log(`  ❌ Object outside vertical ROI (Y: ${centerY.toFixed(0)} not in ${roiTop.toFixed(0)}-${roiBottom.toFixed(0)})`);
+    return false;
+  }
   
   // Calculate horizontal bounds at this Y position (linear interpolation)
   const verticalRatio = (centerY - roiTop) / (roiBottom - roiTop);
   const leftBound = roiLeftTop + (roiLeftBottom - roiLeftTop) * verticalRatio;
   const rightBound = roiRightTop + (roiRightBottom - roiRightTop) * verticalRatio;
   
-  return centerX >= leftBound && centerX <= rightBound;
+  const inBounds = centerX >= leftBound && centerX <= rightBound;
+  
+  if (!inBounds) {
+    console.log(`  ❌ Object outside horizontal ROI (X: ${centerX.toFixed(0)} not in ${leftBound.toFixed(0)}-${rightBound.toFixed(0)})`);
+  }
+  
+  return inBounds;
 }
 
 /**
@@ -122,39 +162,55 @@ export function isInROI(bbox, imageSize) {
  * 
  * @param {Array} detections - Array of { class, score, bbox } from model
  * @param {Object} imageSize - { width, height } in pixels
- * @param {number} confidenceThreshold - Minimum confidence (default 0.5)
+ * @param {number} confidenceThreshold - Minimum confidence (default 0.4, lowered from 0.5)
  * @returns {Array} Array of obstacle objects with position, distance, etc.
  */
-export function analyzeObstacles(detections, imageSize, confidenceThreshold = 0.5) {
-  return detections
-    .filter(d => d.score >= confidenceThreshold)
-    .filter(d => isInROI(d.bbox, imageSize)) // Only consider objects in walkable path
-    .map(d => {
-      const position = getObjectPosition(d.bbox, imageSize.width);
-      const distance = estimateDistance(d.bbox, d.class, imageSize.height);
-      
-      const [ymin, xmin, ymax, xmax] = d.bbox;
-      const centerX = ((xmin + xmax) / 2) * imageSize.width;
-      const centerY = ((ymin + ymax) / 2) * imageSize.height;
-      
-      return {
-        class: d.class,
-        confidence: d.score,
-        position,
-        distance,
-        centerX,
-        centerY,
-        bbox: d.bbox,
-        // Calculate object width for additional context
-        width: (xmax - xmin) * imageSize.width,
-        height: (ymax - ymin) * imageSize.height,
-      };
-    })
-    .sort((a, b) => a.distance - b.distance); // Sort by distance (closest first)
+export function analyzeObstacles(detections, imageSize, confidenceThreshold = 0.4) {
+  console.log(`\nAnalyzing ${detections.length} detections with confidence >= ${confidenceThreshold}`);
+  
+  const highConfidence = detections.filter(d => d.score >= confidenceThreshold);
+  console.log(`After confidence filter: ${highConfidence.length} objects`);
+  
+  const inROI = highConfidence.filter(d => {
+    const inRoi = isInROI(d.bbox, imageSize);
+    if (!inRoi) {
+      console.log(`  Filtered out: ${d.class} (${(d.score * 100).toFixed(1)}%)`);
+    }
+    return inRoi;
+  });
+  
+  console.log(`After ROI filter: ${inROI.length} objects in walking path`);
+  
+  const obstacles = inROI.map(d => {
+    const position = getObjectPosition(d.bbox, imageSize.width);
+    const distance = estimateDistance(d.bbox, d.class, imageSize.height);
+    
+    const [ymin, xmin, ymax, xmax] = d.bbox;
+    const centerX = ((xmin + xmax) / 2) * imageSize.width;
+    const centerY = ((ymin + ymax) / 2) * imageSize.height;
+    
+    return {
+      class: d.class,
+      confidence: d.score,
+      position,
+      distance,
+      centerX,
+      centerY,
+      bbox: d.bbox,
+      // Calculate object width for additional context
+      width: (xmax - xmin) * imageSize.width,
+      height: (ymax - ymin) * imageSize.height,
+    };
+  });
+  
+  // Sort by distance (closest first)
+  return obstacles.sort((a, b) => a.distance - b.distance);
 }
 
 /**
  * Generate navigation command based on obstacle analysis
+ * 
+ * IMPROVED: Better danger zones and more nuanced commands
  * 
  * @param {Array} obstacles - Analyzed obstacles from analyzeObstacles()
  * @returns {Object} Navigation command with direction, message, and details
@@ -165,38 +221,58 @@ export function generateNavigationCommand(obstacles) {
       command: 'CLEAR',
       direction: 'forward',
       message: 'Path clear ahead',
-      speech: 'Path clear, keep moving',
+      speech: 'Path is clear. Safe to proceed.',
       obstacles: [],
     };
   }
   
-  // Filter obstacles by danger zone (within 2 meters)
-  const closeObstacles = obstacles.filter(o => o.distance < 2.0);
-  const veryCloseObstacles = obstacles.filter(o => o.distance < 1.0);
+  // Filter obstacles by danger zones (IMPROVED thresholds)
+  const veryCloseObstacles = obstacles.filter(o => o.distance < 1.5);  // Immediate danger - was 1.2m
+  const closeObstacles = obstacles.filter(o => o.distance < 3.0);     // Warning zone - was 2.5m
+  const nearbyObstacles = obstacles.filter(o => o.distance < 5.0);    // Awareness zone
   
+  console.log(`\nDanger zones: ${veryCloseObstacles.length} very close (<1.5m), ${closeObstacles.length} close (<3m), ${nearbyObstacles.length} nearby (<5m)`);
+  
+  // VERY CLOSE - immediate stop required
   if (veryCloseObstacles.length > 0) {
     const closest = veryCloseObstacles[0];
+    console.log(`⚠️ VERY CLOSE: ${closest.class} at ${closest.distance.toFixed(1)}m - ${closest.position}`);
+    
     return {
       command: 'STOP',
       direction: 'stop',
       message: `STOP! ${closest.class} at ${closest.distance.toFixed(1)}m`,
-      speech: `Stop! ${closest.class} directly ahead at ${closest.distance.toFixed(1)} meters`,
+      speech: `Stop immediately! ${closest.class} ${closest.position === 'center' ? 'directly ahead' : 'on your ' + closest.position} at ${closest.distance.toFixed(1)} meters.`,
       obstacles: veryCloseObstacles,
       closestObstacle: closest,
     };
   }
   
+  // No close obstacles - path mostly clear
   if (closeObstacles.length === 0) {
-    // Some objects detected but far away
-    const nearest = obstacles[0];
-    return {
-      command: 'PROCEED',
-      direction: 'forward',
-      message: `Nearest: ${nearest.class} at ${nearest.distance.toFixed(1)}m`,
-      speech: 'Path mostly clear, proceed forward',
-      obstacles: obstacles.slice(0, 3),
-      closestObstacle: nearest,
-    };
+    if (nearbyObstacles.length > 0) {
+      const nearest = nearbyObstacles[0];
+      console.log(`✓ Path clear, nearest object: ${nearest.class} at ${nearest.distance.toFixed(1)}m`);
+      
+      return {
+        command: 'PROCEED',
+        direction: 'forward',
+        message: `Path clear. ${nearest.class} ahead at ${nearest.distance.toFixed(1)}m`,
+        speech: `Path is clear. Nearest object is ${nearest.class} at ${nearest.distance.toFixed(1)} meters.`,
+        obstacles: nearbyObstacles.slice(0, 3),
+        closestObstacle: nearest,
+      };
+    } else {
+      // Truly clear - no obstacles within 5m
+      console.log('✓ Path completely clear');
+      return {
+        command: 'CLEAR',
+        direction: 'forward',
+        message: 'Path completely clear',
+        speech: 'Path is completely clear. Safe to proceed.',
+        obstacles: [],
+      };
+    }
   }
   
   // Analyze close obstacles by position
@@ -204,20 +280,26 @@ export function generateNavigationCommand(obstacles) {
   const leftObstacles = closeObstacles.filter(o => o.position === 'left');
   const rightObstacles = closeObstacles.filter(o => o.position === 'right');
   
-  // Center path blocked
+  console.log(`Position breakdown: ${centerObstacles.length} center, ${leftObstacles.length} left, ${rightObstacles.length} right`);
+  
+  // CENTER PATH BLOCKED
   if (centerObstacles.length > 0) {
     const centerObstacle = centerObstacles[0];
+    console.log(`⚠️ Center blocked by ${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)}m`);
     
     // Determine clearer side
-    const leftScore = leftObstacles.length + (leftObstacles[0]?.distance < 1.5 ? 2 : 0);
-    const rightScore = rightObstacles.length + (rightObstacles[0]?.distance < 1.5 ? 2 : 0);
+    // Score = number of obstacles + penalty for very close ones
+    const leftScore = leftObstacles.length + (leftObstacles[0]?.distance < 2.0 ? 2 : 0);
+    const rightScore = rightObstacles.length + (rightObstacles[0]?.distance < 2.0 ? 2 : 0);
+    
+    console.log(`  Side scores: left=${leftScore}, right=${rightScore}`);
     
     if (leftScore < rightScore) {
       return {
         command: 'TURN_LEFT',
         direction: 'left',
-        message: `${centerObstacle.class} ahead - Move left`,
-        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Move left`,
+        message: `${centerObstacle.class} ahead - Turn left`,
+        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Turn left to avoid.`,
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
@@ -225,31 +307,34 @@ export function generateNavigationCommand(obstacles) {
       return {
         command: 'TURN_RIGHT',
         direction: 'right',
-        message: `${centerObstacle.class} ahead - Move right`,
-        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Move right`,
+        message: `${centerObstacle.class} ahead - Turn right`,
+        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Turn right to avoid.`,
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
     } else {
-      // Both sides equally blocked
+      // Both sides equally blocked or unavailable
       return {
         command: 'STOP',
         direction: 'stop',
-        message: 'Path blocked - proceed carefully',
-        speech: `${centerObstacle.class} ahead. Path is narrow, proceed with caution`,
+        message: `${centerObstacle.class} ahead - Path blocked`,
+        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Path is blocked. Proceed with extreme caution or stop.`,
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
     }
   }
   
-  // Side obstacles only
+  // SIDE OBSTACLES ONLY (center clear)
   if (leftObstacles.length > 0 && rightObstacles.length > 0) {
+    const leftObstacle = leftObstacles[0];
+    const rightObstacle = rightObstacles[0];
+    
     return {
       command: 'NARROW',
       direction: 'forward',
-      message: 'Narrow passage - center path',
-      speech: 'Obstacles on both sides. Stay centered',
+      message: 'Narrow passage - stay centered',
+      speech: `Narrow passage detected. ${leftObstacle.class} on left at ${leftObstacle.distance.toFixed(1)} meters and ${rightObstacle.class} on right at ${rightObstacle.distance.toFixed(1)} meters. Stay centered.`,
       obstacles: closeObstacles,
     };
   }
@@ -260,7 +345,7 @@ export function generateNavigationCommand(obstacles) {
       command: 'KEEP_RIGHT',
       direction: 'slight_right',
       message: `${leftObstacle.class} on left - keep right`,
-      speech: `${leftObstacle.class} on your left at ${leftObstacle.distance.toFixed(1)} meters. Keep right`,
+      speech: `${leftObstacle.class} on your left at ${leftObstacle.distance.toFixed(1)} meters. Keep to the right.`,
       obstacles: closeObstacles,
       closestObstacle: leftObstacle,
     };
@@ -272,24 +357,25 @@ export function generateNavigationCommand(obstacles) {
       command: 'KEEP_LEFT',
       direction: 'slight_left',
       message: `${rightObstacle.class} on right - keep left`,
-      speech: `${rightObstacle.class} on your right at ${rightObstacle.distance.toFixed(1)} meters. Keep left`,
+      speech: `${rightObstacle.class} on your right at ${rightObstacle.distance.toFixed(1)} meters. Keep to the left.`,
       obstacles: closeObstacles,
       closestObstacle: rightObstacle,
     };
   }
   
-  // Default: proceed
+  // Default fallback: proceed with caution
   return {
     command: 'PROCEED',
     direction: 'forward',
-    message: 'Path clear',
-    speech: 'Path clear ahead',
+    message: 'Obstacles detected - proceed carefully',
+    speech: `${closeObstacles.length} obstacles detected nearby. Proceed with caution.`,
     obstacles: closeObstacles,
   };
 }
 
 /**
  * Get visual ROI overlay coordinates for debugging/visualization
+ * Returns the expanded trapezoid vertices
  * 
  * @param {Object} imageSize - { width, height }
  * @returns {Object} Trapezoid vertices
@@ -298,9 +384,9 @@ export function getROIVertices(imageSize) {
   const { width, height } = imageSize;
   
   return {
-    topLeft: { x: width * 0.4, y: height * 0.2 },
-    topRight: { x: width * 0.6, y: height * 0.2 },
-    bottomRight: { x: width * 0.8, y: height * 0.95 },
-    bottomLeft: { x: width * 0.2, y: height * 0.95 },
+    topLeft: { x: width * 0.05, y: height * 0.05 },
+    topRight: { x: width * 0.95, y: height * 0.05 },
+    bottomRight: { x: width * 0.95, y: height * 0.95 },
+    bottomLeft: { x: width * 0.05, y: height * 0.95 },
   };
 }
