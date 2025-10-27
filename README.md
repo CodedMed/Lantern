@@ -13,7 +13,7 @@ Computer-Vision surrounding identifying app, helping disabled through navigation
 
 1. **Install dependencies**
    ```bash
-   npm install
+   npm install --legacy-peer-deps
    ```
 
 2. **Start the Expo development server**
