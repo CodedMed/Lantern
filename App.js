@@ -17,7 +17,9 @@ export default function App() {
         initialRouteName="Home"
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: '#1a1a2e' },
+          contentStyle: { backgroundColor: '#1A0B2E' },
+          animation: 'slide_from_right',
+          animationDuration: 300,
         }}
       >
         <Stack.Screen 
@@ -28,7 +30,10 @@ export default function App() {
         <Stack.Screen 
           name="Camera" 
           component={CameraScreen}
-          options={{ title: 'Navigation' }}
+          options={{ 
+            title: 'Navigation',
+            animation: 'fade',
+          }}
         />
         <Stack.Screen 
           name="Settings" 

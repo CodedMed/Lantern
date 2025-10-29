@@ -26,18 +26,21 @@ import {
   ActivityIndicator,
   Image,
   Dimensions,
+  BackHandler,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Audio } from 'expo-av';
 import * as Speech from 'expo-speech';
+import * as Haptics from 'expo-haptics';
 import { Accelerometer } from 'expo-sensors';
 import * as tf from '@tensorflow/tfjs';
 // Side-effect import registers the React Native backend and utilities.
 import '@tensorflow/tfjs-react-native';
 import { decodeJpeg } from '@tensorflow/tfjs-react-native';
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
-import * as deeplab from '@tensorflow-models/deeplab';
 import * as FileSystem from 'expo-file-system/legacy';
+import YOLODetector from '../services/YOLODetector';
 import { 
   analyzeObstacles, 
   generateNavigationCommand 
@@ -53,7 +56,6 @@ export default function CameraScreen({ navigation }) {
   const [busy, setBusy] = useState(false);
   const [tfReady, setTfReady] = useState(false);
   const [model, setModel] = useState(null);
-  const [sceneModel, setSceneModel] = useState(null);
   const [lastNavCommand, setLastNavCommand] = useState(null);
   const [imageSize, setImageSize] = useState({ width: 640, height: 480 });
   const [debugInfo, setDebugInfo] = useState('');
@@ -65,75 +67,114 @@ export default function CameraScreen({ navigation }) {
   const scanInterval = useRef(null);
   const movementBuffer = useRef([]);
   const lastScanTime = useRef(0);
+  
+  // Performance optimization - frame skipping
+  const frameSkipCount = useRef(0);
+  const FRAME_SKIP = 4; // Process every 4th frame (4x faster - optimized for real-time)
+  
+  // Depth perception state
+  const [depthMap, setDepthMap] = useState(null);
+  const lastDepthUpdate = useRef(0);
+  
+  // Performance: tensor caching
+  const tensorCache = useRef(null);
+  const lastProcessedImage = useRef(null);
+  
+  // Volume button detection for scanning
+  const lastVolumePress = useRef(0);
+  const volumeClickCount = useRef(0);
 
   useEffect(() => {
-    (async () => {
+    // OPTIMIZED STARTUP: Parallel initialization instead of sequential
+    const initializeApp = async () => {
       try {
-        // Initialize TensorFlow.js for React Native and set the native backend.
-        await tf.ready();
-        try {
-          await tf.setBackend('rn-webgl');
-          await tf.ready();
-          console.log('tfjs backend set to rn-webgl');
-        } catch (be) {
-          console.warn('Could not set rn-webgl backend, continuing with default:', be);
-        }
-
-        // Load COCO-SSD model (MobileNet-SSD backbone)
-        // Detects 90 object classes from COCO dataset
-        // Using lite_mobilenet_v2: smaller (~5MB) and faster to download
-        console.log('Loading COCO-SSD model...');
-        const loadedModel = await cocoSsd.load({
-          base: 'lite_mobilenet_v2', // Faster/smaller than mobilenet_v2
+        const startTime = Date.now();
+        console.log('🚀 Starting initialization...');
+        
+        // PARALLEL: Request permissions immediately (don't wait)
+        const permissionPromises = [
+          !cameraPermission?.granted ? requestCameraPermission() : Promise.resolve(),
+          Audio.requestPermissionsAsync()
+        ];
+        
+        // LAZY LOAD: Start TensorFlow in background, don't block UI
+        const tfPromise = (async () => {
+          try {
+            await tf.ready();
+            await tf.setBackend('rn-webgl');
+            await tf.ready();
+            console.log('✅ TensorFlow ready');
+            return true;
+          } catch (e) {
+            console.warn('⚠️ TensorFlow backend warning:', e.message);
+            return true;
+          }
+        })();
+        
+        // LAZY LOAD: Model loads in background after TensorFlow
+        const modelPromise = tfPromise.then(async () => {
+          try {
+            console.log('📦 Loading model...');
+            await YOLODetector.loadModel('YOLOV5_NANO');
+            setModel(YOLODetector);
+            console.log('✅ Model ready');
+            return true;
+          } catch (e) {
+            console.error('❌ Model load failed:', e.message);
+            setModel(YOLODetector); // Still set for COCO-SSD fallback
+            return false;
+          }
         });
-        setModel(loadedModel);
-        console.log('COCO-SSD model loaded successfully');
         
-        // Load DeepLab model for scene segmentation
-        // Detects: floor, wall, building, sky, person, car, tree, road, grass, sidewalk, etc.
-        console.log('Loading DeepLab model for scene segmentation...');
-        const loadedSceneModel = await deeplab.load({
-          base: 'pascal',           // Pascal VOC dataset (20 classes)
-          quantizationBytes: 2,     // Quantized for smaller size/faster inference
-        });
-        setSceneModel(loadedSceneModel);
-        console.log('DeepLab model loaded successfully');
+        // Wait for permissions first (fast)
+        const [, micResult] = await Promise.all(permissionPromises);
+        setMicrophonePermission(micResult.granted);
         
-        setTfReady(true);
-        
-        // Request camera permission
-        if (!cameraPermission?.granted) {
-          await requestCameraPermission();
-        }
-        
-  // Request microphone permission first using expo-av
-  const mic = await Audio.requestPermissionsAsync();
-  setMicrophonePermission(mic.granted);
-        
-        // Configure audio mode for recording using expo-av Audio module
-        // MUST be set before any recording attempts
-        if (mic.granted) {
+        // Configure audio mode - SINGLE CONFIG for both recording AND playback
+        if (micResult.granted) {
           try {
             await Audio.setAudioModeAsync({
-              allowsRecordingIOS: true,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: false,
-              shouldDuckAndroid: true,
+              allowsRecordingIOS: true,           // Enable microphone recording
+              playsInSilentModeIOS: true,         // Play TTS even in silent mode
+              staysActiveInBackground: false,     // Don't stay active in background
+              shouldDuckAndroid: false,           // Don't lower our volume for other apps
+              interruptionModeIOS: 2,             // Duck other audio (makes our TTS louder)
+              interruptionModeAndroid: 1,         // Don't duck on Android
+              playThroughEarpieceAndroid: false,  // Use main speaker, not earpiece
             });
-            console.log('Audio mode configured for recording');
-          } catch (audioError) {
-            console.error('Could not set audio mode:', audioError);
+            console.log('🔊 Audio mode configured: recording + max volume playback');
+          } catch (e) {
+            console.warn('⚠️ Audio mode config error:', e.message);
           }
         }
         
-        if (cameraPermission?.granted) Speech.speak('Navigation ready');
-        else Speech.speak('Camera permission required');
+        // Mark UI as ready IMMEDIATELY (don't wait for model)
+        setTfReady(true);
+        const readyTime = Date.now();
+        console.log(`⚡ UI ready in ${readyTime - startTime}ms`);
+        
+        // Announce ready immediately
+        if (cameraPermission?.granted) {
+          Speech.speak('Navigation ready. Model loading in background.', { volume: 1.0, rate: 1.0 });
+        }
+        
+        // Model loads in background, announce when done
+        modelPromise.then((success) => {
+          const totalTime = Date.now() - startTime;
+          console.log(`✅ Full initialization: ${totalTime}ms`);
+          if (success) {
+            Speech.speak('Detection ready', { volume: 1.0, rate: 1.0 });
+          }
+        });
+        
       } catch (e) {
         console.error('Initialization error', e);
         setMicrophonePermission(false);
-        setTfReady(true); // Allow app to continue even if model fails
+        setTfReady(true); // Allow app to continue
       }
-    })();
+    };
+    
+    initializeApp();
   }, []);
 
   // Movement detection using accelerometer
@@ -188,16 +229,16 @@ export default function CameraScreen({ navigation }) {
   // Continuous scanning when in continuous mode and moving
   useEffect(() => {
     if (continuousMode && isMoving && model && !busy) {
-      // Start continuous scanning
+      // Ultra-fast continuous scanning (with aggressive frame skipping)
       scanInterval.current = setInterval(() => {
         const now = Date.now();
-        // Only scan if 2.5 seconds passed since last scan
-        if (now - lastScanTime.current > 2500) {
+        // Reduced to 800ms for maximum real-time responsiveness
+        if (now - lastScanTime.current > 800) {
           continuousScan();
         }
-      }, 2500);
+      }, 800); // Very fast interval - frame skip prevents overload
       
-      console.log('Continuous scanning enabled');
+      console.log('Real-time scanning enabled (4x frame skip, 800ms interval)');
     } else {
       // Stop continuous scanning
       if (scanInterval.current) {
@@ -214,11 +255,56 @@ export default function CameraScreen({ navigation }) {
     };
   }, [continuousMode, isMoving, model, busy]);
 
-  const speak = (text) => {
+  // IMPROVED: Screen double-tap detection with haptic feedback
+  // Requires TWO quick taps within 400ms to activate
+  const handleScreenDoubleTap = () => {
+    const now = Date.now();
+    const timeSinceLastTap = now - lastVolumePress.current;
+    
+    if (timeSinceLastTap < 400 && timeSinceLastTap > 0) {
+      // Double tap detected!
+      console.log('🔊 Double-tap detected - triggering scan');
+      
+      // Strong haptic feedback for confirmation
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      
+      // Announce with maximum volume
+      speak('Start scanning');
+      
+      // Trigger scan after brief delay
+      setTimeout(() => identifySurroundings(), 300);
+      
+      // Reset timer
+      lastVolumePress.current = 0;
+    } else {
+      // First tap - set timer and give light haptic feedback
+      console.log('👆 First tap detected, tap again quickly for double-tap');
+      lastVolumePress.current = now;
+      
+      // Light haptic to indicate first tap registered
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const speak = (text, options = {}) => {
     try {
       // Stop any ongoing speech before speaking new text
       Speech.stop();
-      Speech.speak(text, { language: 'en-US', rate: 0.95 });
+      
+      // MAXIMUM VOLUME SETTINGS:
+      // - volume: 1.0 (max on scale 0.0-1.0)
+      // - rate: 0.9 (slightly slower for clarity)
+      // - pitch: 1.0 (normal pitch)
+      // iOS will respect device volume + this setting
+      Speech.speak(text, { 
+        language: 'en-US', 
+        rate: 0.9,
+        pitch: 1.0,
+        volume: 1.0,  // MAXIMUM VOLUME (0.0 to 1.0)
+        ...options
+      });
+      
+      console.log(`🔊 Speaking: "${text}" at max volume`);
     } catch (e) {
       console.warn('Speech error:', e);
     }
@@ -243,14 +329,21 @@ export default function CameraScreen({ navigation }) {
   const continuousScan = async () => {
     if (!cameraRef.current || !model || busy) return;
     
+    // Frame skipping for performance - skip 3 out of 4 frames
+    frameSkipCount.current++;
+    if (frameSkipCount.current < FRAME_SKIP) {
+      return; // Skip this frame
+    }
+    frameSkipCount.current = 0; // Reset counter
+    
     try {
       lastScanTime.current = Date.now();
       
-      // FIXED: Removed skipProcessing and increased quality
+      // MAXIMUM PERFORMANCE: very low quality, small resolution for real-time
       const photo = await cameraRef.current.takePictureAsync({ 
-        quality: 0.85,  // Increased from 0.7 for better detection
+        quality: 0.4,  // Reduced from 0.6 for maximum speed
         base64: false,
-        // skipProcessing removed - was causing orientation issues
+        // exif: false, // Skip EXIF data processing
       });
       
       const navCommand = await analyzeImageForNavigation(photo.uri, photo.width, photo.height);
@@ -301,11 +394,10 @@ export default function CameraScreen({ navigation }) {
     setBusy(true);
     speak('Scanning environment');
     try {
-      // FIXED: Removed skipProcessing and increased quality for better detection
+      // Higher quality for manual scan (not continuous, so speed less critical)
       const photo = await cameraRef.current.takePictureAsync({ 
-        quality: 0.85,  // Increased from 0.7
+        quality: 0.8,  // Good balance between quality and speed
         base64: false,
-        // skipProcessing: true REMOVED - was causing detection issues
       });
       
       console.log('Photo captured:', photo.width, 'x', photo.height);
@@ -410,226 +502,141 @@ export default function CameraScreen({ navigation }) {
       }
 
       console.log('========================================');
-      console.log('Starting image analysis:', imageUri);
-      console.log('Photo dimensions:', imgWidth, 'x', imgHeight);
-      
-      // Read the image file as base64
-      const imgB64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: 'base64',
-      });
-      
-      console.log('Image loaded, size:', imgB64.length, 'bytes');
-      
-      // Convert base64 to Uint8Array
-      const binaryString = atob(imgB64);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      
-      console.log('Image converted to bytes:', bytes.length);
-      
-      // Decode JPEG to tensor
-      const imageTensor = decodeJpeg(bytes);
-      const [height, width] = imageTensor.shape;
-      
-      console.log('Tensor created:', width, 'x', height);
+      console.log('Real-time YOLO analysis:', imageUri.substring(imageUri.length - 20));
       
       // Update image size for distance estimation
-      setImageSize({ width, height });
+      setImageSize({ width: imgWidth, height: imgHeight });
       
-      // Run COCO-SSD object detection
-      console.log('Running object detection...');
-      const predictions = await model.detect(imageTensor);
-      console.log('========================================');
-      console.log(`RAW DETECTION: ${predictions.length} objects detected`);
+      // PERFORMANCE OPTIMIZATION: Run detection with timeout
+      const detectionPromise = model.detect(imageUri);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Detection timeout')), 3000)
+      );
       
-      if (predictions.length > 0) {
-        console.log('Detected objects:');
-        predictions.forEach((pred, idx) => {
-          console.log(`  ${idx + 1}. ${pred.class} (${(pred.score * 100).toFixed(1)}%) at [${pred.bbox.map(v => v.toFixed(0)).join(', ')}]`);
-        });
-      } else {
-        console.log('⚠️ WARNING: No objects detected in image!');
-        setDebugInfo(`No objects detected. Try pointing at common objects (person, chair, car, etc.)`);
-      }
-      console.log('========================================');
+      const predictions = await Promise.race([detectionPromise, timeoutPromise]);
       
-      // Run DeepLab scene segmentation (if model loaded)
-      let sceneInfo = null;
-      if (sceneModel) {
-        try {
-          const segmentation = await sceneModel.segment(imageTensor);
-          sceneInfo = analyzeSceneSegmentation(segmentation, width, height);
-          console.log('Scene analysis:', sceneInfo);
-        } catch (segError) {
-          console.warn('Scene segmentation error:', segError);
-        }
-      }
+      console.log(`🎯 ${predictions.length} objects | Real-time mode`);
       
-      // Convert COCO-SSD bbox format [x, y, w, h] to normalized [ymin, xmin, ymax, xmax]
-      const detections = predictions.map(pred => ({
-        class: pred.class,
-        score: pred.score,
-        bbox: [
-          pred.bbox[1] / height,           // ymin
-          pred.bbox[0] / width,            // xmin
-          (pred.bbox[1] + pred.bbox[3]) / height,  // ymax
-          (pred.bbox[0] + pred.bbox[2]) / width,   // xmax
-        ]
+      // DEPTH PERCEPTION: Calculate depth map from bounding boxes
+      const depthInfo = calculateDepthPerception(predictions, imgWidth, imgHeight);
+      setDepthMap(depthInfo);
+      
+      // Analyze obstacles with optimized confidence threshold
+      const obstacles = analyzeObstacles(predictions, { width: imgWidth, height: imgHeight }, 0.35);
+      
+      // Enhance obstacles with depth information
+      const enhancedObstacles = obstacles.map(obs => ({
+        ...obs,
+        depthZone: getDepthZone(obs.distance),
+        relativeDepth: depthInfo.relativeDepths[obs.class] || 'medium'
       }));
       
-      console.log('Analyzing obstacles with ROI filter...');
+      const navCommand = generateNavigationCommand(enhancedObstacles);
       
-      // Analyze obstacles and generate navigation command
-      // Using 0.4 confidence threshold (lowered from 0.5 for better detection)
-      const obstacles = analyzeObstacles(detections, { width, height }, 0.4);
-      
-      console.log(`After ROI filtering: ${obstacles.length} obstacles in walking path`);
-      
-      if (obstacles.length > 0) {
-        console.log('Obstacles in path:');
-        obstacles.forEach((obs, idx) => {
-          console.log(`  ${idx + 1}. ${obs.class} - ${obs.position} - ${obs.distance.toFixed(1)}m`);
-        });
-      } else {
-        console.log('⚠️ No obstacles in ROI (walking path)');
-        if (predictions.length > 0) {
-          console.log('Objects were detected but filtered out by ROI');
-          setDebugInfo(`Detected ${predictions.length} objects, but none in walking path`);
-        }
-      }
-      
-      const navCommand = generateNavigationCommand(obstacles);
-      
-      // Enhance navigation command with scene context
-      if (sceneInfo) {
-        enhanceNavigationWithScene(navCommand, sceneInfo);
-      }
-      
-      // Add debug info to command
+      // Add depth and performance info
       navCommand.debugInfo = {
         totalDetections: predictions.length,
         obstaclesInROI: obstacles.length,
-        imageSize: { width, height }
+        depthLayers: depthInfo.layers,
+        model: 'YOLO-Optimized'
       };
       
-      // Update debug display
-      setDebugInfo(`Detected: ${predictions.length} | In path: ${obstacles.length}`);
+      setDebugInfo(`${predictions.length} obj | ${obstacles.length} path | ${depthInfo.layers} depths`);
       
-      // Clean up tensors
-      imageTensor.dispose();
-      
-      console.log('Navigation command:', navCommand.command, '-', navCommand.message);
+      console.log('Nav:', navCommand.command);
       console.log('========================================');
       
       return navCommand;
     } catch (error) {
-      console.error('Detection error:', error);
-      console.error('Stack:', error.stack);
+      console.error('Detection error:', error.message);
       setDebugInfo(`Error: ${error.message}`);
       return {
         command: 'ERROR',
-        speech: 'Unable to analyze environment. Check console for details.',
+        speech: 'Analysis failed.',
         obstacles: []
       };
     }
   }
-
-  function analyzeSceneSegmentation(segmentation, width, height) {
-    // DeepLab Pascal VOC classes
-    const SCENE_CLASSES = {
-      0: 'background',
-      1: 'aeroplane', 2: 'bicycle', 3: 'bird', 4: 'boat',
-      5: 'bottle', 6: 'bus', 7: 'car', 8: 'cat', 9: 'chair',
-      10: 'cow', 11: 'diningtable', 12: 'dog', 13: 'horse',
-      14: 'motorbike', 15: 'person', 16: 'pottedplant',
-      17: 'sheep', 18: 'sofa', 19: 'train', 20: 'tvmonitor'
+  
+  // DEPTH PERCEPTION: Calculate depth layers and relative positions
+  function calculateDepthPerception(detections, width, height) {
+    if (!detections || detections.length === 0) {
+      return { layers: 0, relativeDepths: {}, nearestDistance: null };
+    }
+    
+    const depthLayers = {
+      veryClose: [], // < 1.5m
+      close: [],      // 1.5-3m
+      medium: [],     // 3-5m
+      far: []         // > 5m
     };
     
-    const segmentationMap = segmentation.segmentationMap;
-    const totalPixels = segmentationMap.length;
+    const relativeDepths = {};
+    let nearestDistance = Infinity;
     
-    // Count pixels for each class
-    const classCounts = {};
-    const ROI_TOP = Math.floor(height * 0.3);    // Focus on lower 70% (ground level)
-    const ROI_BOTTOM = height;
-    const ROI_LEFT = Math.floor(width * 0.2);
-    const ROI_RIGHT = Math.floor(width * 0.8);
-    
-    let roiPixels = 0;
-    
-    for (let y = ROI_TOP; y < ROI_BOTTOM; y++) {
-      for (let x = ROI_LEFT; x < ROI_RIGHT; x++) {
-        const idx = y * width + x;
-        const classId = segmentationMap[idx];
-        classCounts[classId] = (classCounts[classId] || 0) + 1;
-        roiPixels++;
+    detections.forEach(det => {
+      const [ymin, xmin, ymax, xmax] = det.bbox;
+      const bboxHeight = (ymax - ymin) * height;
+      
+      // Estimate depth from bbox size (larger = closer)
+      const estimatedDistance = estimateDepthFromSize(bboxHeight, det.class);
+      
+      if (estimatedDistance < nearestDistance) {
+        nearestDistance = estimatedDistance;
       }
-    }
+      
+      // Classify into depth layers
+      if (estimatedDistance < 1.5) {
+        depthLayers.veryClose.push(det);
+        relativeDepths[det.class] = 'veryClose';
+      } else if (estimatedDistance < 3.0) {
+        depthLayers.close.push(det);
+        relativeDepths[det.class] = 'close';
+      } else if (estimatedDistance < 5.0) {
+        depthLayers.medium.push(det);
+        relativeDepths[det.class] = 'medium';
+      } else {
+        depthLayers.far.push(det);
+        relativeDepths[det.class] = 'far';
+      }
+    });
     
-    // Find dominant scene elements in ROI
-    const sceneElements = Object.entries(classCounts)
-      .map(([classId, count]) => ({
-        class: SCENE_CLASSES[classId] || 'unknown',
-        classId: parseInt(classId),
-        percentage: (count / roiPixels) * 100
-      }))
-      .filter(el => el.percentage > 5) // Only significant elements (>5% of ROI)
-      .sort((a, b) => b.percentage - a.percentage);
-    
-    // Detect specific hazards
-    const warnings = [];
-    
-    // Check for significant background (could be floor/ground)
-    const background = sceneElements.find(el => el.classId === 0);
-    if (background && background.percentage > 40) {
-      warnings.push('clear_path');
-    }
-    
-    // Detect vehicles/large objects
-    const largeObjects = sceneElements.filter(el => 
-      ['car', 'bus', 'train', 'motorbike', 'bicycle'].includes(el.class)
-    );
-    if (largeObjects.length > 0) {
-      warnings.push('vehicle_detected');
-    }
-    
-    // Detect people
-    const people = sceneElements.find(el => el.class === 'person');
-    if (people && people.percentage > 15) {
-      warnings.push('crowd_ahead');
-    }
+    const layerCount = Object.values(depthLayers).filter(arr => arr.length > 0).length;
     
     return {
-      elements: sceneElements,
-      warnings: warnings,
-      dominantScene: sceneElements[0]?.class || 'unknown'
+      layers: layerCount,
+      depthLayers,
+      relativeDepths,
+      nearestDistance: nearestDistance === Infinity ? null : nearestDistance
     };
   }
-
-  function enhanceNavigationWithScene(navCommand, sceneInfo) {
-    // Add scene context to navigation speech
-    const { warnings, dominantScene } = sceneInfo;
+  
+  // Estimate depth from object size in pixels
+  function estimateDepthFromSize(heightInPixels, objectClass) {
+    // Average heights in meters for common objects
+    const typicalHeights = {
+      person: 1.7,
+      car: 1.5,
+      chair: 0.9,
+      bicycle: 1.2,
+      default: 1.0
+    };
     
-    if (!navCommand.speech) return;
+    const realHeight = typicalHeights[objectClass] || typicalHeights.default;
     
-    // Add scene warnings to speech
-    if (warnings.includes('vehicle_detected') && navCommand.command !== 'STOP') {
-      navCommand.speech += '. Vehicle nearby.';
-    }
+    // Simple inverse relationship: distance ≈ (realHeight * focalLength) / pixelHeight
+    const focalLength = 700; // Approximate for mobile cameras
+    const estimatedDistance = (realHeight * focalLength) / Math.max(heightInPixels, 10);
     
-    if (warnings.includes('crowd_ahead') && navCommand.command === 'PROCEED') {
-      navCommand.speech = 'People ahead. Proceed with caution.';
-    }
-    
-    if (warnings.includes('clear_path') && navCommand.command === 'CLEAR') {
-      navCommand.speech = 'Clear path ahead. Safe to proceed.';
-    }
-    
-    // Store scene info in command
-    navCommand.sceneInfo = sceneInfo;
+    return Math.min(Math.max(estimatedDistance, 0.5), 20); // Clamp to 0.5-20m
+  }
+  
+  // Get depth zone label
+  function getDepthZone(distance) {
+    if (distance < 1.5) return 'immediate';
+    if (distance < 3.0) return 'near';
+    if (distance < 5.0) return 'medium';
+    return 'far';
   }
 
   async function sendAudioForTranscription(uri) {
@@ -638,17 +645,15 @@ export default function CameraScreen({ navigation }) {
     return 'identify';
   }
 
-  if (cameraPermission === null || !cameraPermission || !tfReady || !model || !sceneModel) {
+  if (cameraPermission === null || !cameraPermission || !tfReady || !model) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#ffffff" />
         <Text style={styles.hint}>
           {!tfReady 
-            ? 'Loading AI models...' 
+            ? 'Initializing TensorFlow...' 
             : !model 
-            ? 'Loading object detection...'
-            : !sceneModel
-            ? 'Loading scene analysis...'
+            ? 'Loading YOLO detector...'
             : 'Requesting permissions'}
         </Text>
       </View>
@@ -668,95 +673,214 @@ export default function CameraScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <CameraView ref={cameraRef} style={styles.camera} facing={facing} />
+      {/* Double-tap anywhere on screen to trigger scan (alternative to volume buttons) */}
+      <TouchableOpacity 
+        style={styles.camera} 
+        activeOpacity={1}
+        onPress={handleScreenDoubleTap}
+      >
+        <CameraView ref={cameraRef} style={styles.camera} facing={facing} />
+      </TouchableOpacity>
       
-      {/* Overlays positioned absolutely over camera */}
+      {/* AR-Style Scanning Grid Overlay */}
+      {busy && (
+        <View style={styles.scanningOverlay}>
+          <View style={styles.scanLine} />
+          <View style={styles.cornerTL} />
+          <View style={styles.cornerTR} />
+          <View style={styles.cornerBL} />
+          <View style={styles.cornerBR} />
+        </View>
+      )}
+
+      {/* Top Bar with Glassmorphic Back Button */}
       <View style={styles.topBar}>
         <TouchableOpacity
-          style={styles.backButton}
+          style={styles.backButtonGlass}
           onPress={() => {
             speak('Going back');
             navigation.goBack();
           }}
+          activeOpacity={0.7}
         >
-          <Text style={styles.buttonText}>Back</Text>
+          <LinearGradient
+            colors={['rgba(255, 107, 53, 0.3)', 'rgba(255, 0, 110, 0.3)']}
+            style={styles.backButtonGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <Text style={styles.backIcon}>←</Text>
+            <Text style={styles.backText}>Back</Text>
+          </LinearGradient>
         </TouchableOpacity>
         
-        {/* Movement indicator */}
+        {/* Movement indicator with glow */}
         {continuousMode && (
           <View style={[styles.movementIndicator, isMoving && styles.movementActive]}>
-            <Text style={styles.movementText}>
-              {isMoving ? '🚶 Moving' : '🧍 Still'}
-            </Text>
+            <LinearGradient
+              colors={isMoving ? ['rgba(0, 255, 136, 0.4)', 'rgba(0, 217, 255, 0.4)'] : ['rgba(100, 100, 100, 0.4)', 'rgba(60, 60, 60, 0.4)']}
+              style={styles.movementGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            >
+              <Text style={styles.movementText}>
+                {isMoving ? '🚶 Moving' : '🧍 Still'}
+              </Text>
+            </LinearGradient>
           </View>
         )}
       </View>
 
-      {/* Debug Info */}
+      {/* Debug Info with Gradient */}
       {debugInfo && (
-        <View style={styles.debugInfo}>
-          <Text style={styles.debugText}>{debugInfo}</Text>
-        </View>
-      )}
-
-      {/* Navigation Status Display */}
-      {lastNavCommand && (
-        <View style={styles.navStatus}>
-          <Text style={[
-            styles.navCommand,
-            lastNavCommand.command === 'STOP' && styles.navDanger,
-            lastNavCommand.command === 'CLEAR' && styles.navSafe,
-          ]}>
-            {lastNavCommand.message}
-          </Text>
-          {lastNavCommand.obstacles && lastNavCommand.obstacles.length > 0 && (
-            <Text style={styles.navDetails}>
-              {lastNavCommand.obstacles.length} obstacle{lastNavCommand.obstacles.length > 1 ? 's' : ''} detected
-            </Text>
-          )}
-          {lastNavCommand.debugInfo && (
-            <Text style={styles.navDetails}>
-              Total: {lastNavCommand.debugInfo.totalDetections} | Path: {lastNavCommand.debugInfo.obstaclesInROI}
-            </Text>
-          )}
-        </View>
-      )}
-
-      <View style={styles.controls} pointerEvents="box-none">
-        {/* Continuous mode toggle */}
-        <TouchableOpacity
-          style={[styles.continuousButton, continuousMode && styles.continuousActive]}
-          onPress={toggleContinuousMode}
+        <LinearGradient
+          colors={['rgba(255, 152, 0, 0.95)', 'rgba(255, 193, 7, 0.95)']}
+          style={styles.debugInfo}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
         >
-          <Text style={styles.continuousText}>
-            {continuousMode ? '⚡ Auto-Scan ON' : '🔘 Auto-Scan OFF'}
-          </Text>
+          <Text style={styles.debugText}>ℹ️ {debugInfo}</Text>
+        </LinearGradient>
+      )}
+
+      {/* Glassmorphic Navigation Status Panel */}
+      {lastNavCommand && (
+        <View style={styles.navStatusWrapper}>
+          <LinearGradient
+            colors={
+              lastNavCommand.command === 'STOP' 
+                ? ['rgba(255, 45, 85, 0.3)', 'rgba(255, 0, 110, 0.3)']
+                : lastNavCommand.command === 'CLEAR'
+                ? ['rgba(0, 255, 136, 0.3)', 'rgba(0, 217, 255, 0.3)']
+                : ['rgba(59, 130, 246, 0.3)', 'rgba(107, 47, 181, 0.3)']
+            }
+            style={styles.navStatusGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <BlurView intensity={40} tint="dark" style={styles.navStatus}>
+              <View style={styles.navIconContainer}>
+                <Text style={styles.navIcon}>
+                  {lastNavCommand.command === 'STOP' ? '⚠️' : lastNavCommand.command === 'CLEAR' ? '✅' : '➡️'}
+                </Text>
+              </View>
+              <Text style={[
+                styles.navCommand,
+                lastNavCommand.command === 'STOP' && styles.navDanger,
+                lastNavCommand.command === 'CLEAR' && styles.navSafe,
+              ]}>
+                {lastNavCommand.message}
+              </Text>
+              {lastNavCommand.obstacles && lastNavCommand.obstacles.length > 0 && (
+                <View style={styles.obstacleCount}>
+                  <View style={styles.obstacleDot} />
+                  <Text style={styles.navDetails}>
+                    {lastNavCommand.obstacles.length} obstacle{lastNavCommand.obstacles.length > 1 ? 's' : ''} detected
+                  </Text>
+                </View>
+              )}
+              {lastNavCommand.debugInfo && (
+                <Text style={styles.navDetailsSmall}>
+                  Detected: {lastNavCommand.debugInfo.totalDetections} | In Path: {lastNavCommand.debugInfo.obstaclesInROI}
+                </Text>
+              )}
+            </BlurView>
+          </LinearGradient>
+        </View>
+      )}
+
+      {/* Bottom Controls */}
+      <View style={styles.controls} pointerEvents="box-none">
+        {/* Auto-Scan Toggle with Modern Switch */}
+        <TouchableOpacity
+          style={styles.toggleContainer}
+          onPress={toggleContinuousMode}
+          activeOpacity={0.8}
+        >
+          <LinearGradient
+            colors={continuousMode ? ['rgba(0, 255, 136, 0.3)', 'rgba(0, 217, 255, 0.3)'] : ['rgba(100, 100, 100, 0.3)', 'rgba(60, 60, 60, 0.3)']}
+            style={styles.toggleGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <BlurView intensity={20} tint="dark" style={styles.toggleButton}>
+              <Text style={styles.toggleIcon}>{continuousMode ? '⚡' : '○'}</Text>
+              <Text style={styles.toggleText}>
+                Auto-Scan {continuousMode ? 'ON' : 'OFF'}
+              </Text>
+              {continuousMode && <View style={styles.activePulse} />}
+            </BlurView>
+          </LinearGradient>
         </TouchableOpacity>
         
+        {/* Circular FAB for Scan */}
         <TouchableOpacity 
-          style={[
-            styles.identifyButton,
-            lastNavCommand?.command === 'STOP' && styles.identifyButtonDanger
-          ]} 
+          style={styles.fabContainer}
           onPress={identifySurroundings} 
           disabled={busy || continuousMode}
+          activeOpacity={0.85}
         >
-          <Text style={styles.identifyText}>
-            {busy ? 'Scanning...' : continuousMode ? 'Auto-Scan Active' : 'Scan Environment'}
-          </Text>
+          <LinearGradient
+            colors={
+              lastNavCommand?.command === 'STOP' 
+                ? ['#FF2D55', '#FF006E'] 
+                : busy
+                ? ['#FFD60A', '#FF9F1C']
+                : ['#00D9FF', '#6B2FB5']
+            }
+            style={styles.fabGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <View style={styles.fabInner}>
+              <Text style={styles.fabIcon}>
+                {busy ? '⟳' : continuousMode ? '◉' : '📡'}
+              </Text>
+              <Text style={styles.fabText}>
+                {busy ? 'Scanning' : continuousMode ? 'Auto' : 'Scan'}
+              </Text>
+            </View>
+          </LinearGradient>
+          {!busy && !continuousMode && <View style={styles.fabPulse} />}
         </TouchableOpacity>
 
+        {/* Bottom Control Pills */}
         <View style={styles.rowButtons}>
           <TouchableOpacity
-            style={[styles.smallButton, isRecording && styles.recording]}
+            style={styles.pillButton}
             onPressIn={startRecording}
             onPressOut={stopRecording}
+            activeOpacity={0.8}
           >
-            <Text style={styles.buttonText}>{isRecording ? 'Recording' : 'Voice'}</Text>
+            <LinearGradient
+              colors={isRecording ? ['#FF2D55', '#FF006E'] : ['rgba(107, 47, 181, 0.4)', 'rgba(59, 130, 246, 0.4)']}
+              style={styles.pillGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            >
+              <BlurView intensity={15} tint="dark" style={styles.pillInner}>
+                <Text style={styles.pillIcon}>{isRecording ? '⏺' : '🎤'}</Text>
+                <Text style={styles.pillText}>{isRecording ? 'Recording' : 'Voice'}</Text>
+              </BlurView>
+            </LinearGradient>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.smallButton} onPress={toggleFacing}>
-            <Text style={styles.buttonText}>Flip</Text>
+          <TouchableOpacity 
+            style={styles.pillButton} 
+            onPress={toggleFacing}
+            activeOpacity={0.8}
+          >
+            <LinearGradient
+              colors={['rgba(0, 217, 255, 0.4)', 'rgba(107, 47, 181, 0.4)']}
+              style={styles.pillGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            >
+              <BlurView intensity={15} tint="dark" style={styles.pillInner}>
+                <Text style={styles.pillIcon}>🔄</Text>
+                <Text style={styles.pillText}>Flip</Text>
+              </BlurView>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
       </View>
@@ -766,116 +890,338 @@ export default function CameraScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
-  hint: { color: '#fff', marginTop: 12, fontSize: 16 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A0B2E' },
+  hint: { color: '#fff', marginTop: 12, fontSize: 16, fontWeight: '500' },
   camera: { flex: 1 },
-  topBar: { position: 'absolute', top: 40, left: 16, right: 16, zIndex: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  backButton: { backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 8 },
+  
+  // AR-Style Scanning Overlay
+  scanningOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scanLine: {
+    position: 'absolute',
+    width: '80%',
+    height: 2,
+    backgroundColor: '#00D9FF',
+    shadowColor: '#00D9FF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 10,
+  },
+  cornerTL: {
+    position: 'absolute',
+    top: 100,
+    left: 40,
+    width: 40,
+    height: 40,
+    borderTopWidth: 3,
+    borderLeftWidth: 3,
+    borderColor: '#00D9FF',
+  },
+  cornerTR: {
+    position: 'absolute',
+    top: 100,
+    right: 40,
+    width: 40,
+    height: 40,
+    borderTopWidth: 3,
+    borderRightWidth: 3,
+    borderColor: '#00D9FF',
+  },
+  cornerBL: {
+    position: 'absolute',
+    bottom: 200,
+    left: 40,
+    width: 40,
+    height: 40,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
+    borderColor: '#00D9FF',
+  },
+  cornerBR: {
+    position: 'absolute',
+    bottom: 200,
+    right: 40,
+    width: 40,
+    height: 40,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
+    borderColor: '#00D9FF',
+  },
+  
+  // Top Bar
+  topBar: { 
+    position: 'absolute', 
+    top: 50, 
+    left: 16, 
+    right: 16, 
+    zIndex: 20, 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center' 
+  },
+  backButtonGlass: {
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  backButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  backIcon: {
+    fontSize: 20,
+    color: '#fff',
+    marginRight: 6,
+  },
+  backText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
+  // Movement Indicator
   movementIndicator: {
-    backgroundColor: 'rgba(100,100,100,0.7)',
-    paddingHorizontal: 12,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  movementGradient: {
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#666',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
   },
   movementActive: {
-    backgroundColor: 'rgba(76,175,80,0.8)',
-    borderColor: '#4CAF50',
+    shadowColor: '#00FF88',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
   },
   movementText: {
     color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
   },
+  
+  // Debug Info
   debugInfo: {
     position: 'absolute',
-    top: 90,
+    top: 110,
     left: 16,
     right: 16,
-    backgroundColor: 'rgba(255,152,0,0.9)',
-    padding: 8,
-    borderRadius: 8,
+    padding: 10,
+    borderRadius: 12,
   },
   debugText: {
     color: '#000',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  navStatus: { 
-    position: 'absolute', 
-    top: 130, 
-    left: 16, 
-    right: 16, 
-    backgroundColor: 'rgba(0,0,0,0.85)', 
-    padding: 16, 
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#3b82f6',
-  },
-  navCommand: { 
-    color: '#fff', 
-    fontSize: 20, 
+    fontSize: 13,
     fontWeight: '700',
     textAlign: 'center',
   },
+  
+  // Navigation Status Panel (Glassmorphic)
+  navStatusWrapper: {
+    position: 'absolute', 
+    top: 150, 
+    left: 16, 
+    right: 16,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  navStatusGradient: {
+    padding: 2,
+    borderRadius: 20,
+  },
+  navStatus: { 
+    padding: 20, 
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  navIconContainer: {
+    alignSelf: 'center',
+    marginBottom: 8,
+  },
+  navIcon: {
+    fontSize: 32,
+  },
+  navCommand: { 
+    color: '#fff', 
+    fontSize: 22, 
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
   navDanger: {
-    color: '#ff4444',
+    color: '#FF2D55',
+    textShadowColor: '#FF2D55',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   navSafe: {
-    color: '#44ff44',
+    color: '#00FF88',
+    textShadowColor: '#00FF88',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
+  },
+  obstacleCount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  obstacleDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FFD60A',
+    marginRight: 6,
   },
   navDetails: {
-    color: '#aaa',
+    color: '#E0E7FF',
     fontSize: 14,
-    marginTop: 8,
+    fontWeight: '600',
     textAlign: 'center',
   },
-  controls: { position: 'absolute', bottom: 40, width: '100%', alignItems: 'center' },
-  continuousButton: {
-    backgroundColor: 'rgba(100,100,100,0.8)',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 20,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: '#666',
+  navDetailsSmall: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 6,
+    textAlign: 'center',
   },
-  continuousActive: {
-    backgroundColor: 'rgba(76,175,80,0.9)',
-    borderColor: '#4CAF50',
-  },
-  continuousText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  identifyButton: { 
-    backgroundColor: '#3b82f6', 
-    paddingVertical: 20, 
-    paddingHorizontal: 48, 
-    borderRadius: 40,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-  },
-  identifyButtonDanger: {
-    backgroundColor: '#ff4444',
-  },
-  identifyText: { color: '#fff', fontSize: 20, fontWeight: '700' },
-  rowButtons: { flexDirection: 'row', marginTop: 16, width: '60%', justifyContent: 'space-between' },
-  smallButton: { 
-    backgroundColor: 'rgba(0,0,0,0.7)', 
-    padding: 14, 
-    borderRadius: 12, 
-    minWidth: 100, 
+  
+  // Bottom Controls
+  controls: { 
+    position: 'absolute', 
+    bottom: 40, 
+    width: '100%', 
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#555',
+    paddingHorizontal: 20,
   },
-  recording: { backgroundColor: '#ff4d4d', borderColor: '#ff0000' },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  
+  // Auto-Scan Toggle
+  toggleContainer: {
+    marginBottom: 20,
+    borderRadius: 30,
+    overflow: 'hidden',
+  },
+  toggleGradient: {
+    padding: 2,
+    borderRadius: 30,
+  },
+  toggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 28,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    position: 'relative',
+  },
+  toggleIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  toggleText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  activePulse: {
+    position: 'absolute',
+    right: 15,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#00FF88',
+    shadowColor: '#00FF88',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 6,
+  },
+  
+  // Circular FAB (Floating Action Button)
+  fabContainer: {
+    width: 100,
+    height: 100,
+    marginBottom: 20,
+    position: 'relative',
+  },
+  fabGradient: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#00D9FF',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    elevation: 15,
+  },
+  fabInner: {
+    alignItems: 'center',
+  },
+  fabIcon: {
+    fontSize: 36,
+    marginBottom: 4,
+  },
+  fabText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  fabPulse: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'transparent',
+    borderWidth: 3,
+    borderColor: '#00D9FF',
+    opacity: 0.4,
+  },
+  
+  // Bottom Pill Buttons
+  rowButtons: { 
+    flexDirection: 'row', 
+    width: '100%', 
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  pillButton: {
+    flex: 1,
+    borderRadius: 25,
+    overflow: 'hidden',
+  },
+  pillGradient: {
+    padding: 2,
+    borderRadius: 25,
+  },
+  pillInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 23,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  pillIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  pillText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
 });

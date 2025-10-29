@@ -210,7 +210,7 @@ export function analyzeObstacles(detections, imageSize, confidenceThreshold = 0.
 /**
  * Generate navigation command based on obstacle analysis
  * 
- * IMPROVED: Better danger zones and more nuanced commands
+ * SIMPLIFIED: Generic "obstacle found" messaging instead of specific object identification
  * 
  * @param {Array} obstacles - Analyzed obstacles from analyzeObstacles()
  * @returns {Object} Navigation command with direction, message, and details
@@ -220,59 +220,43 @@ export function generateNavigationCommand(obstacles) {
     return {
       command: 'CLEAR',
       direction: 'forward',
-      message: 'Path clear ahead',
-      speech: 'Path is clear. Safe to proceed.',
+      message: 'Path clear',
+      speech: 'Path clear.',
       obstacles: [],
     };
   }
   
-  // Filter obstacles by danger zones (IMPROVED thresholds)
-  const veryCloseObstacles = obstacles.filter(o => o.distance < 1.5);  // Immediate danger - was 1.2m
-  const closeObstacles = obstacles.filter(o => o.distance < 3.0);     // Warning zone - was 2.5m
-  const nearbyObstacles = obstacles.filter(o => o.distance < 5.0);    // Awareness zone
+  // Filter obstacles by danger zones
+  const veryCloseObstacles = obstacles.filter(o => o.distance < 1.5);  // Immediate danger
+  const closeObstacles = obstacles.filter(o => o.distance < 3.0);     // Warning zone
   
-  console.log(`\nDanger zones: ${veryCloseObstacles.length} very close (<1.5m), ${closeObstacles.length} close (<3m), ${nearbyObstacles.length} nearby (<5m)`);
+  console.log(`\nDanger zones: ${veryCloseObstacles.length} very close (<1.5m), ${closeObstacles.length} close (<3m)`);
   
   // VERY CLOSE - immediate stop required
   if (veryCloseObstacles.length > 0) {
     const closest = veryCloseObstacles[0];
-    console.log(`⚠️ VERY CLOSE: ${closest.class} at ${closest.distance.toFixed(1)}m - ${closest.position}`);
+    console.log(`⚠️ VERY CLOSE: obstacle at ${closest.distance.toFixed(1)}m - ${closest.position}`);
     
     return {
       command: 'STOP',
       direction: 'stop',
-      message: `STOP! ${closest.class} at ${closest.distance.toFixed(1)}m`,
-      speech: `Stop immediately! ${closest.class} ${closest.position === 'center' ? 'directly ahead' : 'on your ' + closest.position} at ${closest.distance.toFixed(1)} meters.`,
+      message: 'Obstacle found - Stop!',
+      speech: 'Obstacle found. Stop immediately.',
       obstacles: veryCloseObstacles,
       closestObstacle: closest,
     };
   }
   
-  // No close obstacles - path mostly clear
+  // No close obstacles - path clear
   if (closeObstacles.length === 0) {
-    if (nearbyObstacles.length > 0) {
-      const nearest = nearbyObstacles[0];
-      console.log(`✓ Path clear, nearest object: ${nearest.class} at ${nearest.distance.toFixed(1)}m`);
-      
-      return {
-        command: 'PROCEED',
-        direction: 'forward',
-        message: `Path clear. ${nearest.class} ahead at ${nearest.distance.toFixed(1)}m`,
-        speech: `Path is clear. Nearest object is ${nearest.class} at ${nearest.distance.toFixed(1)} meters.`,
-        obstacles: nearbyObstacles.slice(0, 3),
-        closestObstacle: nearest,
-      };
-    } else {
-      // Truly clear - no obstacles within 5m
-      console.log('✓ Path completely clear');
-      return {
-        command: 'CLEAR',
-        direction: 'forward',
-        message: 'Path completely clear',
-        speech: 'Path is completely clear. Safe to proceed.',
-        obstacles: [],
-      };
-    }
+    console.log('✓ Path clear');
+    return {
+      command: 'CLEAR',
+      direction: 'forward',
+      message: 'Path clear',
+      speech: 'Path clear.',
+      obstacles: [],
+    };
   }
   
   // Analyze close obstacles by position
@@ -285,10 +269,9 @@ export function generateNavigationCommand(obstacles) {
   // CENTER PATH BLOCKED
   if (centerObstacles.length > 0) {
     const centerObstacle = centerObstacles[0];
-    console.log(`⚠️ Center blocked by ${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)}m`);
+    console.log(`⚠️ Center blocked - obstacle at ${centerObstacle.distance.toFixed(1)}m`);
     
     // Determine clearer side
-    // Score = number of obstacles + penalty for very close ones
     const leftScore = leftObstacles.length + (leftObstacles[0]?.distance < 2.0 ? 2 : 0);
     const rightScore = rightObstacles.length + (rightObstacles[0]?.distance < 2.0 ? 2 : 0);
     
@@ -298,8 +281,8 @@ export function generateNavigationCommand(obstacles) {
       return {
         command: 'TURN_LEFT',
         direction: 'left',
-        message: `${centerObstacle.class} ahead - Turn left`,
-        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Turn left to avoid.`,
+        message: 'Obstacle found - Turn left',
+        speech: 'Obstacle found ahead. Turn left.',
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
@@ -307,18 +290,18 @@ export function generateNavigationCommand(obstacles) {
       return {
         command: 'TURN_RIGHT',
         direction: 'right',
-        message: `${centerObstacle.class} ahead - Turn right`,
-        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Turn right to avoid.`,
+        message: 'Obstacle found - Turn right',
+        speech: 'Obstacle found ahead. Turn right.',
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
     } else {
-      // Both sides equally blocked or unavailable
+      // Both sides equally blocked
       return {
         command: 'STOP',
         direction: 'stop',
-        message: `${centerObstacle.class} ahead - Path blocked`,
-        speech: `${centerObstacle.class} at ${centerObstacle.distance.toFixed(1)} meters ahead. Path is blocked. Proceed with extreme caution or stop.`,
+        message: 'Obstacle found - Path blocked',
+        speech: 'Obstacle found. Path blocked.',
         obstacles: closeObstacles,
         closestObstacle: centerObstacle,
       };
@@ -327,39 +310,34 @@ export function generateNavigationCommand(obstacles) {
   
   // SIDE OBSTACLES ONLY (center clear)
   if (leftObstacles.length > 0 && rightObstacles.length > 0) {
-    const leftObstacle = leftObstacles[0];
-    const rightObstacle = rightObstacles[0];
-    
     return {
       command: 'NARROW',
       direction: 'forward',
-      message: 'Narrow passage - stay centered',
-      speech: `Narrow passage detected. ${leftObstacle.class} on left at ${leftObstacle.distance.toFixed(1)} meters and ${rightObstacle.class} on right at ${rightObstacle.distance.toFixed(1)} meters. Stay centered.`,
+      message: 'Obstacles found - Stay centered',
+      speech: 'Obstacles found on both sides. Stay centered.',
       obstacles: closeObstacles,
     };
   }
   
   if (leftObstacles.length > 0) {
-    const leftObstacle = leftObstacles[0];
     return {
       command: 'KEEP_RIGHT',
       direction: 'slight_right',
-      message: `${leftObstacle.class} on left - keep right`,
-      speech: `${leftObstacle.class} on your left at ${leftObstacle.distance.toFixed(1)} meters. Keep to the right.`,
+      message: 'Obstacle found on left',
+      speech: 'Obstacle found on left. Keep right.',
       obstacles: closeObstacles,
-      closestObstacle: leftObstacle,
+      closestObstacle: leftObstacles[0],
     };
   }
   
   if (rightObstacles.length > 0) {
-    const rightObstacle = rightObstacles[0];
     return {
       command: 'KEEP_LEFT',
       direction: 'slight_left',
-      message: `${rightObstacle.class} on right - keep left`,
-      speech: `${rightObstacle.class} on your right at ${rightObstacle.distance.toFixed(1)} meters. Keep to the left.`,
+      message: 'Obstacle found on right',
+      speech: 'Obstacle found on right. Keep left.',
       obstacles: closeObstacles,
-      closestObstacle: rightObstacle,
+      closestObstacle: rightObstacles[0],
     };
   }
   
@@ -367,8 +345,8 @@ export function generateNavigationCommand(obstacles) {
   return {
     command: 'PROCEED',
     direction: 'forward',
-    message: 'Obstacles detected - proceed carefully',
-    speech: `${closeObstacles.length} obstacles detected nearby. Proceed with caution.`,
+    message: 'Obstacle found',
+    speech: 'Obstacle found. Proceed carefully.',
     obstacles: closeObstacles,
   };
 }
