@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 export default function App() {
   return (
     <View style={styles.container}>
-      <Text>Rocco A  BITCH ASS NIGGA</Text>
+      <Text>Lantern helps you navigate your surroundings.</Text>
       <StatusBar style="auto" />
     </View>
   );
