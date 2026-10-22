@@ -41,6 +41,8 @@ env/
 .expo/
 .expo-shared/
 web-build/
+# Historical duplicate starter, retained in Git history rather than the app tree.
+/lanternv1/
 
 # npm package manager files
 yarn.lock

@@ -1,5 +1,7 @@
 # Lantern
 
+**[Open the live browser demo](https://lantern-vision-demo.onrender.com)** · [Repair pull request](https://github.com/CodedMed/Lantern/pull/4)
+
 An accessibility-focused **object-awareness prototype**: point a camera at a scene, or select a photo, and hear the objects it recognizes and their positions in the image.
 
 **Not a navigation or safety aid.** Lantern can miss or misidentify hazards. It cannot measure reliable distance, determine a safe route, detect drop-offs, or read signs. Do not use it to cross roads or replace established mobility aids.
