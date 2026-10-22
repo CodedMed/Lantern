@@ -154,7 +154,7 @@ export default function HomeScreen({ navigation }) {
         {/* Main Content */}
         <View style={styles.content}>
           <Text style={styles.welcomeText}>
-            Navigate with confidence and clarity
+            Hear the objects around you
           </Text>
           
           {/* Glassmorphic Feature Cards */}
@@ -170,7 +170,7 @@ export default function HomeScreen({ navigation }) {
             <TouchableOpacity 
               style={styles.cardTouchable}
               onPress={() => navigation.navigate('Camera')}
-              accessibilityLabel="Start Camera Navigation"
+              accessibilityLabel="Open object recognition camera"
               accessibilityHint="Opens camera to identify surroundings"
               activeOpacity={0.8}
             >
@@ -189,9 +189,9 @@ export default function HomeScreen({ navigation }) {
                   >
                     <Text style={styles.cardIcon}>📷</Text>
                   </LinearGradient>
-                  <Text style={styles.cardTitle}>Start Navigation</Text>
+                  <Text style={styles.cardTitle}>Explore with Camera</Text>
                   <Text style={styles.cardDescription}>
-                    Real-time AI object detection to guide your path
+                    Identify common objects, not safe walking routes
                   </Text>
                   <View style={styles.cardIndicator}>
                     <View style={styles.readyDot} />
@@ -275,7 +275,7 @@ export default function HomeScreen({ navigation }) {
                   </LinearGradient>
                   <Text style={styles.cardTitle}>Help & Tutorial</Text>
                   <Text style={styles.cardDescription}>
-                    Learn how to navigate effectively with Lantern
+                    Learn how to try Lantern and understand its limitations
                   </Text>
                 </BlurView>
               </LinearGradient>

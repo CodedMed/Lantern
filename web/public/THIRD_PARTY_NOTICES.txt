@@ -1,0 +1,16 @@
+Lantern web demo credits
+
+Object recognition: @tensorflow-models/coco-ssd 2.2.3 with the pretrained
+ssd_lite_mobilenet_v2 TensorFlow.js model (80 COCO categories).
+TensorFlow.js and TensorFlow.js Models: Copyright Google LLC, Apache-2.0.
+https://github.com/tensorflow/tfjs-models/tree/master/coco-ssd
+https://github.com/tensorflow/tfjs
+
+Sample scene: image1.jpg from the TensorFlow.js Models COCO-SSD demo.
+Source: https://github.com/tensorflow/tfjs-models/blob/master/coco-ssd/demo/image1.jpg
+Repository license: Apache-2.0. See /tensorflow-LICENSE.txt.
+Sample detections are generated live; no result is hardcoded.
+
+React and React DOM: Meta Platforms, Inc. and affiliates, MIT license.
+Vite: Evan You and Vite contributors, MIT license.
+The dependency packages retain their individual license notices.

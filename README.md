@@ -1,138 +1,88 @@
-# Lantern 🔦
+# Lantern
 
-Computer-Vision surrounding identifying app, helping disabled through navigation.
+An accessibility-focused **object-awareness prototype**: point a camera at a scene, or select a photo, and hear the objects it recognizes and their positions in the image.
 
-## 🚀 Quick Start
+**Not a navigation or safety aid.** Lantern can miss or misidentify hazards. It cannot measure reliable distance, determine a safe route, detect drop-offs, or read signs. Do not use it to cross roads or replace established mobility aids.
 
-### Prerequisites
-- Node.js and npm installed
-- Expo Go app on your phone ([iOS](https://apps.apple.com/app/expo-go/id982107779) | [Android](https://play.google.com/store/apps/details?id=host.exp.exponent))
-- Python 3.x (optional, for future ML features)
+## Try the browser demo
 
-### Installation & Running
+The browser app lives in `web/`. It needs **no backend, database, account, .env file, or API key**. It is suitable for free static hosting and works on desktop and mobile browsers.
 
-1. **Install dependencies**
-   ```bash
-   npm install --legacy-peer-deps
-   ```
+1. Click **Try the demo** to run real recognition on the bundled sample scene. No camera permission is needed.
+2. Choose **Upload photo** (JPG, PNG, WebP, AVIF; up to 15 MB), or **Use camera** and allow camera access. Phone cameras require HTTPS; `localhost` is allowed for development.
+3. Click **Scan scene**. Results include actual model labels, confidence scores, left/center/right image positions, bounding boxes, and inference timing.
+4. Toggle spoken descriptions or click **Read again**. Some browsers require this explicit tap before allowing speech. Camera auto-scan performs one scan at a time and throttles repeated speech.
+5. **Settings** saves speech speed, speech on/off, contrast, text size, and recognition threshold in this browser.
 
-2. **Start the Expo development server**
-   ```bash
-   npx expo start
-   ```
+The first scan downloads TensorFlow.js and the pretrained model. Later scans reuse the same loaded model. Initial download time and inference speed depend on the network and device; the displayed timing measures **inference only**, not initial setup. The app uses WebGL where available and falls back to CPU if WebGL cannot initialize.
 
-3. **Open on your device**
-   - Scan the QR code with Expo Go (Android) or Camera app (iOS)
-   
-   **If on public WiFi:**
-   ```bash
-   npx expo start --tunnel
-   ```
-   
-   **Alternative connection methods:**
-   - LAN mode: `npx expo start --lan`
-   - USB debugging: Connect phone via USB and press `a` (Android) or `i` (iOS)
-   - Mobile hotspot: Connect laptop to phone's hotspot and run `npx expo start`
+### Run locally (macOS, Windows, Linux)
 
-4. **Stop the server**
-   - Press `Ctrl + C` in terminal
+Install Node.js **22.12 or later**. From the repository root:
 
-## 📱 Features
-
-- **🏠 Home Screen**: Clean, accessible interface with large buttons
-- **📷 Camera Navigation**: Use your phone's camera to identify surroundings
-- **🔊 Text-to-Speech**: Verbal descriptions of detected objects
-- **⚙️ Settings**: Customize speech rate, volume, and accessibility options
-- **❓ Help**: Tutorial and tips for using the app
-- **♿ Accessibility First**: Built with screen readers and accessibility in mind
-
-## 🛠️ Tech Stack
-
-- React Native with Expo
-- React Navigation
-- Expo Camera
-- Expo Speech
-- (Future: TensorFlow.js for object detection)
-
-## 📂 Project Structure
-
-```
-Lantern/
-├── screens/
-│   ├── HomeScreen.js       # Main landing page
-│   ├── CameraScreen.js     # Camera view for navigation
-│   ├── SettingsScreen.js   # App settings
-│   └── HelpScreen.js       # Tutorial and help
-├── App.js                  # Navigation setup
-├── app.json                # Expo configuration
-├── package.json            # Dependencies
-└── .gitignore             # Git ignore rules
+```sh
+npm run web:install
+npm run web
 ```
 
-## 🔧 Troubleshooting
+Open the local URL printed by Vite (normally `http://localhost:5173`). You do **not** need to install the root Expo dependencies for the web app.
 
-### PowerShell script execution error?
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```sh
+npm run test:web
+npm run build:web
+npm run preview --prefix web
 ```
 
-### Tunnel connection timeout?
-- Try LAN mode instead: `npx expo start --lan`
-- Use USB debugging with your device
-- Create a mobile hotspot from your phone
+## Architecture
 
-### Missing dependencies?
-```bash
-npx expo install expo-status-bar expo-camera expo-speech
+```text
+web/                     React + Vite browser application (separate locked dependencies)
+  src/main.jsx           Camera, uploads, overlays, speech, accessible controls
+  src/detector.mjs       Lazy-loaded model, deduplicated initialization, scan lock
+  public/                Licensed sample scene, icon, third-party notices
+  tests/core.test.mjs    Shared logic, retry/concurrency, backend fallback tests
+utils/scene.mjs          Shared box normalization and conservative scene descriptions
+utils/preferences.mjs    Shared validated preferences
+App.js, screens/         Existing Expo/React Native mobile app
+services/YOLODetector.js Native COCO-SSD wrapper; historical filename, NOT YOLO
 ```
 
-### Camera permission issues?
-- Make sure to allow camera access when prompted
-- Check phone settings if denied
+Recognition uses **TensorFlow.js 4.22 / COCO-SSD 2.2.3, Lite MobileNet V2**, pretrained for 80 COCO categories. This project does not include custom-trained YOLO weights. Old design/training guides describe experiments or plans, not verified capabilities of the current demo. `config/modelConfig.js` and `services/OpenCVUtils.js` are legacy experiments and are not used by the current scanner.
 
-## 📝 Development Notes
+COCO boxes arrive as pixel `[x, y, width, height]`; the shared layer converts them to normalized `[ymin, xmin, ymax, xmax]`. Both clients use the same coordinate convention and object-awareness descriptions. No fabricated distance or "path clear" result is generated. Model confidence is not measured accuracy.
 
-### Python Virtual Environment (Optional)
-If you're working on Python-based ML features:
-```bash
-# Activate venv
-lanternenv\Scripts\activate
+Photos and camera frames are processed locally, not uploaded or stored by Lantern. Static assets and model weights still require network requests; model files come from Google's public TensorFlow.js model hosting. Speech uses the browser/OS voice service, which may have its own network requirements. Preferences are stored locally; no analytics or camera recording is added.
 
-# Deactivate
-deactivate
+## Free Render deployment
+
+Create a **Static Site**, not a Web Service, using this Git repository and the repair branch (or the branch after merging):
+
+| Setting           | Value                                                                   |
+| ----------------- | ----------------------------------------------------------------------- |
+| Root directory    | Leave empty (shared code lives outside `web/`)                          |
+| Build command     | `npm ci --prefix web && npm run test:web && npm run build:web`          |
+| Publish directory | `web/dist`                                                              |
+| Environment       | `NODE_VERSION=22`, `SKIP_INSTALL_DEPS=true` (non-secret build settings) |
+
+There are no client-side routes requiring SPA rewrites. The static site needs no sleeping backend. Render's workspace bandwidth/build-minute limits still apply; no paid compute or database is required. The dependency lockfile is committed for reproducible installs. GitHub Actions also runs tests and the production build.
+
+## Native app status
+
+The original Expo app is retained. Its scanner now identifies the actual COCO-SSD model, disposes decoded tensors and temporary captures, requests camera permission explicitly, serializes auto-scans, stops camera/speech when backgrounded, and uses real saved preferences. The simulated microphone transcription button was removed rather than presented as working speech recognition.
+
+The native TensorFlow adapter is older than Expo SDK 54 and has legacy peer dependency constraints. The **browser build is the tested demo target**; these native changes require a physical-device Expo/development-build test before claiming native support. Do not assume the hosted browser app is an App Store-ready native release.
+
+For native development only, the pre-existing dependency setup is:
+
+```sh
+npm install --legacy-peer-deps
+npm start
 ```
 
-### Git Workflow
-```bash
-# Create a new feature branch
-git checkout -b feature/your-feature
+Use the browser demo if Expo Go or the native GL adapter is incompatible with your device. The web build deliberately does not depend on those native modules.
 
-# Stage changes
-git add .
+## Source and credits
 
-# Commit
-git commit -m "Description of changes"
+Repairs are based on the fuller `new_andrew` app branch, not the largely starter-only `main` branch. Deployment changes are isolated on `fix/lantern-web-demo` for review.
 
-# Push to GitHub
-git push -u origin feature/your-feature
-```
-
-## 🎯 Roadmap
-
-- [x] Basic navigation setup
-- [x] Home screen with accessible UI
-- [x] Camera integration
-- [x] Speech synthesis
-- [ ] Object detection with TensorFlow
-- [ ] Obstacle warning system
-- [ ] Text recognition (OCR)
-- [ ] Indoor navigation
-- [ ] Offline mode
-
-## 🤝 Contributing
-
-This is a project to help visually impaired users navigate their surroundings. Contributions are welcome!
-
-## 📄 License
-
-MIT License
+Sample image and TensorFlow model credits are in `web/public/THIRD_PARTY_NOTICES.txt`; the upstream Apache license is included alongside it. Sample results are calculated live, not mocked.

@@ -73,9 +73,9 @@ export default function HelpScreen({ navigation }) {
                   <Text style={styles.stepNumber}>1</Text>
                 </LinearGradient>
                 <View style={styles.stepContent}>
-                  <Text style={styles.helpTitle}>Start Navigation</Text>
+                  <Text style={styles.helpTitle}>Open the Camera</Text>
                   <Text style={styles.helpText}>
-                    Tap the "Start Navigation" button on the home screen to activate the camera and begin your journey.
+                    Tap "Explore with Camera" on the home screen. Camera permission is requested explicitly; no microphone is needed.
                   </Text>
                   <Text style={styles.helpIcon}>📱 ➜ 📷</Text>
                 </View>
@@ -103,7 +103,7 @@ export default function HelpScreen({ navigation }) {
                 <View style={styles.stepContent}>
                   <Text style={styles.helpTitle}>Point Your Camera</Text>
                   <Text style={styles.helpText}>
-                    Aim your camera at objects, signs, or obstacles around you. Hold steady for the best AI detection results.
+                    Aim at common objects and hold steady in good lighting. Lantern does not read signs or detect every hazard.
                   </Text>
                   <Text style={styles.helpIcon}>🎯 ➜ 🔍</Text>
                 </View>
@@ -131,7 +131,7 @@ export default function HelpScreen({ navigation }) {
                 <View style={styles.stepContent}>
                   <Text style={styles.helpTitle}>Tap to Scan</Text>
                   <Text style={styles.helpText}>
-                    Press the large circular scan button to analyze your surroundings. Enable Auto-Scan for continuous detection while moving.
+                    Press Scan scene for one image, or start Auto-scan for repeated analysis. Stay stationary when trying this prototype.
                   </Text>
                   <Text style={styles.helpIcon}>👆 ➜ 📡</Text>
                 </View>
@@ -157,9 +157,9 @@ export default function HelpScreen({ navigation }) {
                   <Text style={styles.stepNumber}>4</Text>
                 </LinearGradient>
                 <View style={styles.stepContent}>
-                  <Text style={styles.helpTitle}>Listen & Navigate</Text>
+                  <Text style={styles.helpTitle}>Listen & Explore</Text>
                   <Text style={styles.helpText}>
-                    Lantern will speak detailed descriptions of your surroundings, including obstacles, distances, and safe paths forward.
+                    Lantern speaks object names and their positions in the image using COCO-SSD. It cannot measure distance or determine a safe path. Do not use it to cross roads or replace mobility aids.
                   </Text>
                   <Text style={styles.helpIcon}>🔊 ➜ 🚶</Text>
                 </View>

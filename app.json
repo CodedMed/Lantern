@@ -15,16 +15,14 @@
     },
     "android": {
       "package": "com.lantern.app",
-      "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO"
-      ]
+      "permissions": ["CAMERA"]
     },
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Lantern to access your camera to identify surroundings and obstacles."
+          "cameraPermission": "Allow Lantern to identify common objects in camera images.",
+          "recordAudioAndroid": false
         }
       ]
     ]

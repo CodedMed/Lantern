@@ -43,7 +43,6 @@ env/
 web-build/
 
 # npm package manager files
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
