@@ -53,9 +53,25 @@ private struct LidarScreen: View {
                             .accessibilityIdentifier("distance-\(sector.rawValue)")
                     }
                 }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
-                Text(sensor.running ? sensor.cue.title : "Camera off").font(.title2.bold())
-                Text(sensor.running ? sensor.cue.detail : "Point at your surroundings. Measurements come from ARKit's LiDAR depth feed, not assumed object sizes.")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                if !sensor.running || sensor.cue.speechPriority == 2 || sensor.cue.key.hasPrefix("side:") || sensor.cue.key == "unknown" {
+                    Text(sensor.running ? sensor.cue.title : "Camera off").font(.title2.bold())
+                    Text(sensor.running ? sensor.cue.detail : "Point at your surroundings. Measurements come from ARKit's LiDAR depth feed, not assumed object sizes.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                if sensor.running {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Direction to inspect · not a walking route").font(.caption.bold())
+                        Label(sensor.inspection.title, systemImage: inspectionSymbol).font(.headline)
+                        Text(sensor.inspection.detail).font(.subheadline)
+                        Text("Pause before checking. Left/right are relative to where the phone points. Stairs, glass, body clearance and hazards outside the view are not verified.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.4)))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("inspection-guidance")
+                    // Deliberately not a live region: app speech handles changes;
+                    // VoiceOver users can read this without competing announcements.
+                }
                 HStack(spacing: 12) {
                     Button(sensor.running ? "Stop" : "Start LiDAR") {
                         if sensor.running { sensor.stop() } else { sensor.start() }
@@ -78,6 +94,7 @@ private struct LidarScreen: View {
                         Text("Left, Ahead, and Right match the three boxes in the camera view. Hold the phone upright and aim forward while stationary.")
                         Text("Meters describe the nearest supported surface patch, not an identified object or a guaranteed free path. The sample percentage is depth coverage, not an accuracy score.")
                         Text("Unknown is intentional when depth is uncertain, outside the 0.2–4.5 m software window, or only classified floor is sampled. Re-aim slowly at an opaque nearby wall or furniture; never assume Unknown means clear.")
+                        Text("The direction check needs all three distances, stronger sample coverage, an identified floor and a steady, upright view. A side must be meaningfully farther than ahead and the other side. Ties, nearby surfaces, movement or missing depth remove the choice immediately. Check means inspect with the phone, not start walking.")
                     }.font(.caption).padding(.top, 8)
                 }
                 Text("No API key, recording, upload, or distance calibration. Sensor data stays on this device.").font(.caption)
@@ -90,6 +107,14 @@ private struct LidarScreen: View {
                 else if newPhase == .background || !sensor.requestingPermission { sensor.stop() }
             }
             .onDisappear { sensor.stop() }
+    }
+    private var inspectionSymbol: String {
+        switch sensor.inspection.target {
+        case .left: return "arrow.left"
+        case .ahead: return "arrow.up"
+        case .right: return "arrow.right"
+        case nil: return "hand.raised"
+        }
     }
 }
 

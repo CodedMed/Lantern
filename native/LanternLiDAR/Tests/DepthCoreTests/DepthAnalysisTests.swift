@@ -103,11 +103,14 @@ final class DepthAnalysisTests: XCTestCase {
         XCTAssertEqual(newScene[.ahead]?.meters, 3)
     }
     func testDirectionIsWhereToCheckNotWhereToWalk() {
-        let cue = DepthGuidance.cue([
+        let input: [Sector: SectorReading] = [
             .ahead: SectorReading(meters: 0.8, coverage: 1),
             .left: SectorReading(meters: 1, coverage: 1),
             .right: SectorReading(meters: 3, coverage: 1)
-        ], floorKnown: true)
+        ]
+        var guide = DepthInspectionGuide()
+        let assessment = settle(&guide, input)
+        let cue = DepthGuidance.cue(input, floorKnown: true, inspection: assessment)
         XCTAssertTrue(cue.speech.contains("Check right"))
         XCTAssertFalse(cue.speech.lowercased().contains("walk"))
         XCTAssertFalse(cue.speech.lowercased().contains("safe"))
@@ -275,7 +278,7 @@ final class DepthAnalysisTests: XCTestCase {
             .ahead: SectorReading(meters: 0.8, coverage: 1),
             .left: SectorReading(meters: 1, coverage: 1),
             .right: SectorReading(meters: 3, coverage: 1)
-        ], floorKnown: true)
+        ], floorKnown: true, inspection: .check(.right))
         XCTAssertTrue(policy.shouldSpeak(closeCue, now: 1, speaking: false))
         XCTAssertFalse(policy.shouldSpeak(anotherDirection, now: 3, speaking: true))
         XCTAssertFalse(policy.shouldSpeak(closeCue, now: 5, speaking: true))
@@ -317,5 +320,197 @@ final class DepthAnalysisTests: XCTestCase {
         XCTAssertFalse(policy.shouldSpeak(closer, now: 12.6, speaking: false))
         XCTAssertFalse(policy.shouldSpeak(closer, now: 13, speaking: false))
         XCTAssertTrue(policy.shouldSpeak(closer, now: 13.4, speaking: false))
+    }
+
+    private var uprightPose: InspectionPose {
+        InspectionPose(position: SIMD3(0, 0, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
+    }
+    private func scene(_ left: Double = 1, _ ahead: Double = 0.8, _ right: Double = 3, coverage: Double = 1) -> [Sector: SectorReading] {
+        [.left: SectorReading(meters: left, coverage: coverage), .ahead: SectorReading(meters: ahead, coverage: coverage), .right: SectorReading(meters: right, coverage: coverage)]
+    }
+    private func settle(_ guide: inout DepthInspectionGuide, _ input: [Sector: SectorReading], start: Double = 1,
+                        pose: InspectionPose? = nil) -> InspectionAssessment {
+        var result = InspectionAssessment.stale
+        for i in 0...10 {
+            let stamp = start + Double(i) * 0.1
+            result = guide.update(input, floorKnown: true, pose: pose ?? uprightPose, capturedAt: stamp, now: stamp)
+        }
+        return result
+    }
+    func testDirectionNeedsTimeAndDistinctFramesNotOneLargeDistance() {
+        var guide = DepthInspectionGuide()
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1, now: 1), .settling)
+        XCTAssertNil(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1.4, now: 1.4).target)
+        XCTAssertNil(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1.81, now: 1.81).target) // Only three frames.
+        _ = guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1.9, now: 1.9)
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 2, now: 2), .check(.right))
+    }
+    func testDirectionSelectsLeftOrRightSymmetrically() {
+        var guide = DepthInspectionGuide()
+        XCTAssertEqual(settle(&guide, scene()), .check(.right))
+        guide.reset()
+        XCTAssertEqual(settle(&guide, scene(3, 0.8, 1)), .check(.left))
+    }
+    func testAheadIsInspectedWithoutNeedlessSideChanges() {
+        var guide = DepthInspectionGuide()
+        XCTAssertEqual(settle(&guide, scene(3, 2, 4)), .check(.ahead))
+    }
+    func testTiesAndSmallDistanceDifferencesHaveNoSidePreference() {
+        for input in [scene(3, 0.8, 3), scene(3, 0.8, 3.2), scene(1, 1.6, 1.9)] {
+            var guide = DepthInspectionGuide()
+            XCTAssertEqual(settle(&guide, input), .noPreference)
+        }
+    }
+    func testAllNearbySurfacesNeverSelectDirection() {
+        var guide = DepthInspectionGuide()
+        XCTAssertEqual(settle(&guide, scene(0.6, 0.8, 1.2)), .nearbySurfaces)
+    }
+    func testUnknownFloorOrAnyUnknownRegionImmediatelyWithdrawsDirection() {
+        for sector in Sector.allCases {
+            var guide = DepthInspectionGuide()
+            XCTAssertNotNil(settle(&guide, scene()).target)
+            var input = scene(); input[sector] = .unknown
+            XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .missingDepth)
+            XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 2.2, now: 2.2), .settling)
+        }
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        XCTAssertEqual(guide.update(scene(), floorKnown: false, pose: uprightPose, capturedAt: 2.1, now: 2.1), .floorUnknown)
+    }
+    func testValidDisplayDistanceDoesNotBypassStrongerDirectionCoverage() {
+        for coverage in [0.35, 0.5, 0.59] {
+            var guide = DepthInspectionGuide()
+            XCTAssertNotNil(scene(coverage: coverage)[.right]?.meters)
+            XCTAssertEqual(settle(&guide, scene(coverage: coverage)), .missingDepth)
+        }
+    }
+    func testMissingDictionaryEntryDoesNotTreatMissingSideAsFarAway() {
+        var guide = DepthInspectionGuide()
+        var input = scene(); input.removeValue(forKey: .left)
+        XCTAssertEqual(settle(&guide, input), .missingDepth)
+    }
+    func testFloorOnlyOrOutsideRangeDoesNotMeanDirectionIsOpen() {
+        for value in [DepthAnalysis.analyze(grid(1, floor: true)), DepthAnalysis.analyze(grid(7)), SectorReading(meters: .infinity, coverage: 1)] {
+            var guide = DepthInspectionGuide()
+            var input = scene(); input[.right] = value
+            XCTAssertEqual(settle(&guide, input), .missingDepth)
+        }
+    }
+    func testNewNearbySurfaceRemovesDirectionWithoutWaitingForSettling() {
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        XCTAssertEqual(guide.update(scene(1, 0.8, 0.6), floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .nearbySurfaces)
+    }
+    func testDirectionReversalIsWithheldUntilNewViewSettles() {
+        var guide = DepthInspectionGuide()
+        XCTAssertEqual(settle(&guide, scene()), .check(.right))
+        XCTAssertEqual(guide.update(scene(3, 0.8, 1), floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .settling)
+        XCTAssertEqual(settle(&guide, scene(3, 0.8, 1), start: 2.2), .check(.left))
+    }
+    func testAlternatingDirectionsNeverAccumulateIntoARecommendation() {
+        var guide = DepthInspectionGuide()
+        for i in 0...40 {
+            let stamp = Double(i) * 0.1
+            let input = i % 2 == 0 ? scene() : scene(3, 0.8, 1)
+            XCTAssertNil(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: stamp, now: stamp).target)
+        }
+    }
+    func testPoseTranslationWithdrawsDirectionAndRequiresNewSettling() {
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        let shifted = InspectionPose(position: SIMD3(0.15, 0, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: shifted, capturedAt: 2.1, now: 2.1), .moving)
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: shifted, capturedAt: 2.2, now: 2.2), .settling)
+        XCTAssertEqual(settle(&guide, scene(), start: 2.3, pose: shifted), .check(.right))
+    }
+    func testSlowCumulativeRotationCannotKeepAnOldDirection() {
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        var result = InspectionAssessment.stale
+        for i in 1...6 {
+            let angle = Double(i * 2) * .pi / 180
+            let rotated = InspectionPose(position: SIMD3(0, 0, 0), forward: SIMD3(-sin(angle), 0, -cos(angle)), up: SIMD3(0, 1, 0))!
+            let stamp = 2 + Double(i) * 0.1
+            result = guide.update(scene(), floorKnown: true, pose: rotated, capturedAt: stamp, now: stamp)
+        }
+        XCTAssertEqual(result, .moving)
+    }
+    func testPitchAndRollOutsideWindowWithholdDirection() {
+        let angle = 40.0 * .pi / 180
+        let pitch = InspectionPose(position: .zero, forward: SIMD3(0, sin(angle), -cos(angle)), up: SIMD3(0, cos(angle), sin(angle)))!
+        let roll = InspectionPose(position: .zero, forward: SIMD3(0, 0, -1), up: SIMD3(sin(angle), cos(angle), 0))!
+        for pose in [pitch, roll] {
+            var guide = DepthInspectionGuide()
+            XCTAssertEqual(settle(&guide, scene(), pose: pose), .tilted)
+        }
+    }
+    func testInvalidPoseIsRejectedRatherThanGuessingDirection() {
+        XCTAssertNil(InspectionPose(position: SIMD3(.nan, 0, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0)))
+        XCTAssertNil(InspectionPose(position: .zero, forward: .zero, up: SIMD3(0, 1, 0)))
+        XCTAssertNil(InspectionPose(position: .zero, forward: SIMD3(0, 0, -1), up: SIMD3(0, 0, -1)))
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: nil, capturedAt: 2.1, now: 2.1), .stale)
+    }
+    func testStaleFutureRepeatedAndOutOfOrderFramesCannotRetainDirection() {
+        for (stamp, now) in [(2.1, 2.7), (3.0, 2.1), (2.0, 2.1), (1.9, 2.1), (Double.nan, 2.1), (2.1, Double.nan)] {
+            var guide = DepthInspectionGuide()
+            _ = settle(&guide, scene())
+            XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: stamp, now: now), .stale)
+        }
+    }
+    func testLongGapAndStopResetRequireNewSettling() {
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 3, now: 3), .settling)
+        guide.reset()
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 3.1, now: 3.1), .settling)
+    }
+    func testUnknownDirectionDoesNotDelayImmediateCloseAheadWarning() {
+        var guide = DepthInspectionGuide()
+        let inspection = guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1, now: 1)
+        let cue = DepthGuidance.cue(scene(), floorKnown: true, inspection: inspection)
+        var speech = DepthSpeechPolicy()
+        XCTAssertEqual(cue.speechPriority, 2)
+        XCTAssertTrue(speech.shouldSpeak(cue, now: 1, speaking: false))
+        XCTAssertTrue(cue.speech.hasPrefix("Pause."))
+        XCTAssertFalse(cue.speech.contains("Check right"))
+    }
+    func testDirectionUpdatesPreserveSentenceCompletionAndGap() {
+        let input = scene()
+        let early = DepthGuidance.cue(input, floorKnown: true, inspection: .settling)
+        let confirmed = DepthGuidance.cue(input, floorKnown: true, inspection: .check(.right))
+        var speech = DepthSpeechPolicy()
+        XCTAssertTrue(speech.shouldSpeak(early, now: 1, speaking: false))
+        XCTAssertFalse(speech.shouldSpeak(confirmed, now: 2, speaking: true))
+        XCTAssertFalse(speech.shouldSpeak(confirmed, now: 3, speaking: true))
+        speech.didFinish(at: 4)
+        XCTAssertFalse(speech.shouldSpeak(confirmed, now: 4.1, speaking: false))
+        XCTAssertFalse(speech.shouldSpeak(confirmed, now: 4.5, speaking: false))
+        XCTAssertTrue(speech.shouldSpeak(confirmed, now: 4.9, speaking: false))
+    }
+    func testDirectionSelectionInvariantsAcrossDistanceCombinations() {
+        for left in [0.3, 0.7, 1.0, 1.6, 1.8, 2.5, 4.0] {
+            for ahead in [0.3, 0.7, 1.0, 1.6, 1.8, 2.5, 4.0] {
+                for right in [0.3, 0.7, 1.0, 1.6, 1.8, 2.5, 4.0] {
+                    var guide = DepthInspectionGuide()
+                    let result = settle(&guide, scene(left, ahead, right))
+                    switch result.target {
+                    case .left:
+                        XCTAssertGreaterThanOrEqual(left, 1.75)
+                        XCTAssertGreaterThanOrEqual(left - ahead, 0.6 - 1e-9)
+                        XCTAssertGreaterThanOrEqual(left - right, 0.5 - 1e-9)
+                    case .right:
+                        XCTAssertGreaterThanOrEqual(right, 1.75)
+                        XCTAssertGreaterThanOrEqual(right - ahead, 0.6 - 1e-9)
+                        XCTAssertGreaterThanOrEqual(right - left, 0.5 - 1e-9)
+                    case .ahead:
+                        XCTAssertGreaterThanOrEqual(ahead, 1.75)
+                        XCTAssertGreaterThanOrEqual(min(left, right), 0.75)
+                    case nil: break
+                    }
+                }
+            }
+        }
     }
 }

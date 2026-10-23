@@ -207,8 +207,160 @@ public struct DepthSpeechPolicy {
     }
 }
 
+/// Directions name a camera region to inspect, never a body-clearance corridor.
+/// Kept separate from speech so a direction can disappear immediately while an
+/// already-playing sentence finishes instead of restarting on every frame.
+public enum InspectionAssessment: Equatable, Sendable {
+    case check(Sector), settling, missingDepth, floorUnknown, tilted, moving, nearbySurfaces, noPreference, stale
+
+    public var target: Sector? { if case let .check(sector) = self { return sector }; return nil }
+    public var title: String {
+        switch self {
+        case let .check(sector): return "Check \(sector.rawValue)"
+        case .settling: return "Hold steady for a direction check"
+        case .missingDepth, .stale: return "Direction unavailable"
+        case .floorUnknown: return "Floor not identified"
+        case .tilted: return "Hold upright and aim forward"
+        case .moving: return "Recheck after moving the phone"
+        case .nearbySurfaces: return "Pause — surfaces nearby"
+        case .noPreference: return "No preferred direction"
+        }
+    }
+    public var detail: String {
+        switch self {
+        case .check(.ahead):
+            return "No close surface was measured ahead in a steady view. Inspect ahead before moving. This does not verify a walking route."
+        case let .check(sector):
+            return "A farther surface was consistently measured on the \(sector.rawValue) than ahead and on the other side. Turn the phone to inspect that region; this is not an instruction to step there."
+        case .settling:
+            return "Pause and hold the phone steady while all three regions are compared. No direction is selected yet."
+        case .missingDepth:
+            return "All three regions need fresh distances and stronger sample coverage for comparison. Unknown, floor-only, or missing depth is not open space."
+        case .floorUnknown:
+            return "Pause and scan slowly to identify the floor. Floor classification is a prerequisite, not proof of a continuous, level path."
+        case .tilted:
+            return "Keep the phone upright, aiming approximately level ahead while stationary. A view of the ceiling or floor cannot choose a direction."
+        case .moving:
+            return "The camera view changed. The old direction is removed; pause and hold still to compare the new view. Directions are relative to the phone, not your body."
+        case .nearbySurfaces:
+            return "Supported surfaces are nearby in all three regions. No direction is selected. Pause and inspect your surroundings."
+        case .noPreference:
+            return "The measurements are too similar or do not meet the comparison margins. No direction is selected. Pause and scan slowly."
+        case .stale:
+            return "Fresh, ordered depth and camera pose are required. The previous direction is removed. Pause and recheck."
+        }
+    }
+    public var speech: String {
+        switch self {
+        case let .check(sector): return "Check \(sector.rawValue) with the phone."
+        case .settling: return "Hold steady for a direction check."
+        case .missingDepth, .stale: return "Direction uncertain. Hold steady."
+        case .floorUnknown: return "Floor not identified. Scan slowly."
+        case .tilted: return "Hold upright and aim forward."
+        case .moving: return "View changed. Hold steady and recheck."
+        case .nearbySurfaces: return "Surfaces nearby. No preferred direction."
+        case .noPreference: return "No preferred direction. Scan slowly."
+        }
+    }
+    public var key: String {
+        switch self {
+        case let .check(sector): return "check-\(sector.rawValue)"
+        case .settling: return "settling"
+        case .missingDepth: return "missing-depth"
+        case .floorUnknown: return "floor-unknown"
+        case .tilted: return "tilted"
+        case .moving: return "moving"
+        case .nearbySurfaces: return "nearby"
+        case .noPreference: return "no-preference"
+        case .stale: return "stale"
+        }
+    }
+}
+
+/// World-space pose of the portrait camera view. No heading map or calibration
+/// is stored. Reject malformed/non-orthogonal vectors rather than guessing.
+public struct InspectionPose: Sendable {
+    public let position: SIMD3<Double>
+    public let forward: SIMD3<Double>
+    public let up: SIMD3<Double>
+    public init?(position: SIMD3<Double>, forward: SIMD3<Double>, up: SIMD3<Double>) {
+        guard [position.x, position.y, position.z, forward.x, forward.y, forward.z, up.x, up.y, up.z].allSatisfy({ $0.isFinite }) else { return nil }
+        let fl = sqrt(Self.dot(forward, forward)), ul = sqrt(Self.dot(up, up))
+        guard (0.9...1.1).contains(fl), (0.9...1.1).contains(ul) else { return nil }
+        let f = forward / fl, u = up / ul
+        guard abs(Self.dot(f, u)) < 0.05 else { return nil }
+        self.position = position; self.forward = f; self.up = u
+    }
+    public var isUpright: Bool { up.y >= cos(25 * .pi / 180) && abs(forward.y) <= sin(25 * .pi / 180) }
+    fileprivate func matches(_ other: InspectionPose) -> Bool {
+        let delta = position - other.position
+        return Self.dot(delta, delta) <= 0.12 * 0.12
+            && Self.dot(forward, other.forward) >= cos(10 * .pi / 180)
+            && Self.dot(up, other.up) >= cos(10 * .pi / 180)
+    }
+    private static func dot(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double { a.x * b.x + a.y * b.y + a.z * b.z }
+}
+
+/// Conservative inspection heuristic, NOT a path planner. These thresholds are
+/// prototype choices, not validated safety margins or sensor error bounds.
+public struct DepthInspectionGuide {
+    public static let settlingTime = 0.8
+    public static let minimumSamples = 5
+    private var lastTimestamp: Double?
+    private var lastNow: Double?
+    private var candidate: Sector?
+    private var candidateSince = -Double.infinity
+    private var samples = 0
+    private var anchor: InspectionPose?
+    public init() {}
+    public mutating func reset() { self = DepthInspectionGuide() }
+
+    public mutating func update(_ readings: [Sector: SectorReading], floorKnown: Bool,
+                                pose: InspectionPose?, capturedAt: Double, now: Double) -> InspectionAssessment {
+        guard DepthAnalysis.isFresh(capturedAt: capturedAt, now: now),
+              lastTimestamp.map({ capturedAt > $0 }) ?? true,
+              lastNow.map({ now >= $0 }) ?? true, let pose else {
+            reset(); return .stale
+        }
+        if let lastTimestamp, capturedAt - lastTimestamp > DepthAnalysis.maximumAge { reset() }
+        lastTimestamp = capturedAt; lastNow = now
+        guard pose.isUpright else { clearCandidate(); anchor = nil; return .tilted }
+        if let anchor, !pose.matches(anchor) {
+            clearCandidate(); self.anchor = pose
+            return .moving
+        }
+        if anchor == nil { anchor = pose }
+        guard floorKnown else { clearCandidate(); return .floorUnknown }
+        guard Sector.allCases.allSatisfy({ readings[$0]?.meters != nil && (readings[$0]?.coverage ?? 0) >= 0.6 }),
+              let left = readings[.left]?.meters, let ahead = readings[.ahead]?.meters,
+              let right = readings[.right]?.meters else { clearCandidate(); return .missingDepth }
+
+        let proposed: Sector
+        if ahead >= 1.75 && left >= 0.75 && right >= 0.75 {
+            // Do not suggest a needless side change just because a wall there
+            // is farther away. "Check ahead" is still not permission to walk.
+            proposed = .ahead
+        } else if left >= 1.75 && left >= ahead + 0.6 && left >= right + 0.5 {
+            proposed = .left
+        } else if right >= 1.75 && right >= ahead + 0.6 && right >= left + 0.5 {
+            proposed = .right
+        } else {
+            clearCandidate()
+            return max(left, ahead, right) < 1.75 ? .nearbySurfaces : .noPreference
+        }
+        if candidate != proposed {
+            candidate = proposed; candidateSince = capturedAt; samples = 0
+        }
+        samples = min(samples + 1, Self.minimumSamples)
+        guard samples >= Self.minimumSamples, capturedAt - candidateSince >= Self.settlingTime else { return .settling }
+        return .check(proposed)
+    }
+    private mutating func clearCandidate() { candidate = nil; samples = 0; candidateSince = -.infinity }
+}
+
 public enum DepthGuidance {
-    public static func cue(_ readings: [Sector: SectorReading], floorKnown: Bool) -> DepthCue {
+    public static func cue(_ readings: [Sector: SectorReading], floorKnown: Bool,
+                           inspection: InspectionAssessment? = nil) -> DepthCue {
         let ahead = readings[.ahead]?.meters
         guard let ahead else {
             return DepthCue(title: "Distance unknown", detail: "Pause and inspect your surroundings. Missing depth does not mean clear space.", speech: "Pause. Distance uncertain. Hold the phone steady.", key: "unknown", urgent: true)
@@ -216,18 +368,18 @@ public enum DepthGuidance {
         let text = String(format: "Surface ahead, about %.1f meters.", ahead)
         let closeSide = [Sector.left, .right].first { (readings[$0]?.meters ?? .infinity) < 0.75 }
         if ahead < 1.25 {
-            var check = "Check around you."
-            if floorKnown,
-               let left = readings[.left], let right = readings[.right],
-               left.coverage >= 0.5, right.coverage >= 0.5,
-               let lm = left.meters, let rm = right.meters {
-                if rm > lm + 0.4 && rm > 1.5 { check = "Check right." }
-                else if lm > rm + 0.4 && lm > 1.5 { check = "Check left." }
-            }
+            let check = inspection?.speech ?? "Check around you."
             return DepthCue(title: "Pause and check", detail: "\(text) \(check) This is not a verified walking route.", speech: "Pause. \(text) \(check)", key: "pause:\(check):\(Int((ahead * 2).rounded()))", urgent: true)
         }
         if let side = closeSide {
-            return DepthCue(title: "Surface close on \(side.rawValue)", detail: "Pause and inspect around you. Other hazards may be missed.", speech: "Pause. Surface close on your \(side.rawValue).", key: "side:\(side.rawValue)", urgent: true)
+            return DepthCue(title: "Surface close on \(side.rawValue)", detail: "Pause and inspect around you. Other hazards may be missed.", speech: "Pause. Surface close on your \(side.rawValue). \(inspection?.speech ?? "")", key: "side:\(side.rawValue):\(inspection?.key ?? "")", urgent: true)
+        }
+        if let inspection {
+            let distance = inspection.target.flatMap { readings[$0]?.meters }.map {
+                String(format: " Surface about %.1f meters.", $0)
+            } ?? ""
+            return DepthCue(title: inspection.title, detail: inspection.detail,
+                            speech: "Pause. \(inspection.speech)\(distance)", key: "inspection:\(inspection.key)", urgent: inspection.target == nil)
         }
         return DepthCue(title: readings[.ahead]?.label ?? "Distance unknown", detail: "Surface depth, not a guarantee of clearance. Check before moving.", speech: text, key: "ahead:\(Int((ahead * 2).rounded()))", urgent: false)
     }

@@ -15,6 +15,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
     @Published private(set) var status = "Camera off"
     @Published private(set) var readings: [Sector: SectorReading] = [:]
     @Published private(set) var floorKnown = false
+    @Published private(set) var inspection: InspectionAssessment = .stale
     @Published private(set) var cue = DepthGuidance.cue([:], floorKnown: false)
     @Published var voiceEnabled = true {
         didSet {
@@ -35,6 +36,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
     private var lastProcessed = -Double.infinity
     private var lastReceived: Double?
     private var smoother = DepthSmoother()
+    private var inspectionGuide = DepthInspectionGuide()
     private var expiryTimer: Timer?
     private let speech = AVSpeechSynthesizer()
     private var speechPolicy = DepthSpeechPolicy()
@@ -126,6 +128,8 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
 
     private func clearReadings(stopSpeech: Bool = true) {
         smoother.reset()
+        inspectionGuide.reset()
+        inspection = .stale
         readings = [:]
         floorKnown = false
         lastReceived = nil
@@ -197,7 +201,17 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         lastReceived = frame.timestamp
         floorKnown = sampled.floorKnown
         readings = smoother.update(sampled.readings, capturedAt: frame.timestamp, now: CACurrentMediaTime())
-        cue = DepthGuidance.cue(readings, floorKnown: floorKnown)
+        // Use the actual portrait view axes, not ARKit's landscape image axes.
+        // Compare raw current-frame readings for direction eligibility: display
+        // smoothing must not conceal a newly nearer candidate-side surface.
+        let camera = simd_inverse(frame.camera.viewMatrix(for: .portrait))
+        let pose = InspectionPose(
+            position: SIMD3(Double(camera[3].x), Double(camera[3].y), Double(camera[3].z)),
+            forward: SIMD3(-Double(camera[2].x), -Double(camera[2].y), -Double(camera[2].z)),
+            up: SIMD3(Double(camera[1].x), Double(camera[1].y), Double(camera[1].z)))
+        inspection = inspectionGuide.update(sampled.readings, floorKnown: floorKnown, pose: pose,
+                                             capturedAt: frame.timestamp, now: CACurrentMediaTime())
+        cue = DepthGuidance.cue(readings, floorKnown: floorKnown, inspection: inspection)
         status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
         say(cue)
     }

@@ -71,6 +71,38 @@ accuracy**. The in-app help explains positioning and these limits.
 Leaving and returning reads new depth. There is no chair identity, stored chair
 size, runtime distance calibration, or manual same-chair confirmation.
 
+## Direction to inspect (not permission to walk)
+
+The three numbers cannot establish a traversable corridor, detect every step or
+drop-off, or account for body width. The native app therefore says **Check left,
+Check ahead, Check right**, or explains why no direction is selected. These are
+phone-relative regions to inspect while stationary, not navigation commands.
+
+- Requires fresh, ordered data, a classified floor, and a valid distance with
+  at least 60% in-range/high-confidence grid coverage in **all three** regions.
+  A floor somewhere in the map does not establish a continuous floor under a route.
+- Requires an upright portrait view, aiming within 25° of level; restarts the
+  comparison after more than 12 cm translation or 10° rotation from the reference
+  view. These pose checks reduce mixing scenes; they do not detect walking reliably.
+- A candidate must persist for at least 0.8 s across at least five distinct
+  frames, without a gap longer than 0.5 s. Raw current-frame distances determine
+  eligibility, so display smoothing cannot preserve a now-ineligible side.
+- Prefers inspecting ahead if its supported surface is at least 1.75 m away and
+  neither side has a supported surface closer than 0.75 m. Otherwise, a side
+  needs a surface at least 1.75 m away, at least 0.6 m farther than ahead, and
+  at least 0.5 m farther than the opposite side. A large value alone never wins.
+- Similar distances, all-nearby surfaces, missing/low-coverage depth, unclassified
+  floor, excessive tilt, or a changed view immediately withdraw the visual choice.
+  Reversals must settle again; the previous direction is not held through uncertainty.
+- Close-ahead warnings still start without waiting for direction acquisition.
+  Ordinary direction changes keep the sentence-completion policy described above;
+  the already-playing spoken snapshot can briefly differ from the live panel.
+
+All thresholds above are **unvalidated engineering heuristics**, not measured
+error bounds, clinically established margins, or a collision-avoidance guarantee.
+The app never says a path is safe or tells someone to start walking. It needs
+systematic supervised physical and accessibility testing before navigation use.
+
 Filters/thresholds are engineering heuristics, not established safety margins or
 validated accuracy guarantees. LiDAR can fail on glass, mirrors, dark/reflective
 surfaces, sunlight, occlusion, motion and uncertain tracking. Floor classification
@@ -110,6 +142,9 @@ The core may compile while XCTest and all iOS SDK checks remain unavailable.
 Tests use synthetic grids for confidence/coverage, connected patches vs outliers,
 floor masking, stale/out-of-order frames, loss/return, closer surfaces, smoothing,
 unprojection and conservative cues. They do not establish sensor accuracy.
+Direction tests cover all 343 combinations of seven synthetic distances in three
+regions, plus missing/floor-only depth, stronger coverage, pose changes, tilt,
+reversals, flickering candidates, stale/repeated frames, and speech completion.
 
 ## Physical-device acceptance checklist
 
@@ -119,6 +154,11 @@ with intermittent Unknown readings. This confirms a basic live-depth interaction
 **not measured accuracy, comprehensive acceptance, or safe navigation**. The
 checklist below still needs systematic physical testing; automated tests cannot
 replace it.
+
+Audio smoke test: the user reported that the updated iPhone speech is clearer and
+sentences finish. This is user feedback, not an accessibility study. The direction
+comparison update requires a separate physical smoke test; automated checks alone
+do not confirm its sensor behavior.
 
 While stationary (with a sighted helper if needed):
 
@@ -131,6 +171,11 @@ While stationary (with a sighted helper if needed):
   covering the sensor. Unreliable readings must remain Unknown.
 - Test first permission grant/denial, Stop, background/return and interruptions.
   Camera and voice must stop correctly. Do not test by walking toward obstacles.
+- In a stationary supervised setup, compare a near opaque surface ahead with a
+  farther side. Wait for a steady-view check, then pan/tilt, obscure one region,
+  or bring a surface into that side; the direction must withdraw and settle anew.
+  Similar side distances must not cause rapid left/right flipping. Listen for
+  complete, non-overlapping sentences and check Repeat/mute/voice speed.
 
 ## Primary research
 
