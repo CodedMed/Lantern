@@ -60,9 +60,19 @@ private struct LidarScreen: View {
                     Button(sensor.running ? "Stop" : "Start LiDAR") {
                         if sensor.running { sensor.stop() } else { sensor.start() }
                     }.buttonStyle(.borderedProminent).disabled(!sensor.supported || sensor.requestingPermission)
-                    Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running)
+                    Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
+                        .accessibilityHint("Repeats current guidance when the voice is idle. Does not restart a sentence already playing.")
                 }.controlSize(.large).tint(.black)
                 Toggle("Short voice alerts", isOn: $sensor.voiceEnabled).tint(.black)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Voice speed").font(.subheadline)
+                    Slider(value: $sensor.voiceSpeed, in: 0.35...0.6, step: 0.01) {
+                        Text("Voice speed")
+                    } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
+                        .tint(.black)
+                    Text("Messages finish before ordinary updates. Only a new close-ahead warning may interrupt. VoiceOver voice and speed settings take precedence when enabled.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 DisclosureGroup("How to read the distances") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Left, Ahead, and Right match the three boxes in the camera view. Hold the phone upright and aim forward while stationary.")

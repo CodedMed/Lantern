@@ -34,7 +34,7 @@ test("native timer cancellation is not invoked with the loop as its browser rece
 });
 test("a prominent central object produces a short pause cue, never a safe-side instruction", () => {
   const cue = getGuidance([object("chair", [0.2, 0.25, 0.95, 0.8])]);
-  assert.equal(cue.speech, "Chair ahead. Pause; check left.");
+  assert.equal(cue.speech, "Pause. Chair ahead. Check left.");
   assert.equal(cue.alert.level, "pause");
   assert.doesNotMatch(
     JSON.stringify(cue),
@@ -44,11 +44,11 @@ test("a prominent central object produces a short pause cue, never a safe-side i
 test("side alerts describe image position without telling the user to step elsewhere", () => {
   assert.equal(
     getGuidance([object("person", [0.4, 0.05, 0.9, 0.2])]).speech,
-    "Person on left.",
+    "Person on the left.",
   );
   assert.equal(
     getGuidance([object("person", [0.4, 0.8, 0.9, 0.95])]).speech,
-    "Person on right.",
+    "Person on the right.",
   );
 });
 test("an object overlapping the center is ahead even when its midpoint is off-center", () => {
@@ -203,25 +203,37 @@ function voiceFixture() {
   let time = 0,
     cancels = 0;
   const spoken = [];
+  const timers = new Map();
+  let nextTimer = 0;
   const engine = {
     pending: false,
     speaking: false,
     getVoices: () => [],
-    speak: (utterance) => spoken.push(utterance),
+    speak: (utterance) => { engine.speaking = true; spoken.push(utterance); },
     cancel: () => {
       cancels++;
+      engine.speaking = false;
+      spoken.at(-1)?.onerror?.();
     },
   };
   const narrator = new Narrator({
     engine,
     makeUtterance: (text) => ({ text }),
     now: () => time,
+    schedule: (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, due: time + delay }); return id; },
+    cancel: (id) => timers.delete(id),
   });
-  const finish = () => spoken.at(-1)?.onend();
+  const finish = () => { engine.speaking = false; spoken.at(-1)?.onend(); };
   return {
     narrator,
     spoken,
     engine,
+    timers,
+    flushTimers: () => {
+      for (const [id, timer] of [...timers]) {
+        if (timer.due <= time) { timers.delete(id); timer.callback(); }
+      }
+    },
     finish,
     advance: (elapsed) => {
       time += elapsed;
@@ -239,13 +251,15 @@ const ahead = {
   speech: "Chair ahead. Pause.",
   level: "pause",
 };
-test("unchanged ordinary object alerts are not repeated every frame", () => {
+test("unchanged ordinary context is quiet between 12-second reminders", () => {
   const voice = voiceFixture();
   assert.equal(voice.narrator.say(side), true);
   voice.finish();
-  voice.advance(30000);
+  voice.advance(11000);
   assert.equal(voice.narrator.say(side), false);
   assert.equal(voice.spoken.length, 1);
+  voice.advance(1000);
+  assert.equal(voice.narrator.say(side), true);
 });
 test("speech does not build a queue or repeatedly cancel a phrase mid-sentence", () => {
   const voice = voiceFixture();
@@ -280,13 +294,16 @@ test("persistent prominent warnings have a 12-second reminder interval", () => {
   voice.advance(1000);
   assert.equal(voice.narrator.say(ahead), true);
 });
-test("manual Repeat bypasses duplicate suppression and mute stops speech immediately", () => {
+test("Repeat does not restart an active sentence and mute stops immediately", () => {
   const voice = voiceFixture();
   voice.narrator.say(side);
+  assert.equal(voice.narrator.say(side, { manual: true }), false);
+  assert.equal(voice.cancels(), 0);
+  voice.finish();
   assert.equal(voice.narrator.say(side, { manual: true }), true);
   voice.narrator.stop();
   assert.equal(voice.narrator.active, false);
-  assert.equal(voice.cancels(), 2);
+  assert.equal(voice.cancels(), 1);
 });
 test("silent or unsupported speech is harmless", () => {
   const voice = voiceFixture();
@@ -294,4 +311,109 @@ test("silent or unsupported speech is harmless", () => {
   const unavailable = new Narrator({ engine: null, makeUtterance: null });
   assert.equal(unavailable.say(ahead), false);
   unavailable.stop();
+});
+
+test("different central warnings finish instead of interrupting one another", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(ahead);
+  voice.advance(1800);
+  assert.equal(voice.narrator.say({ ...ahead, key: "person:ahead:pause", speech: "Pause. Person ahead." }), false);
+  assert.equal(voice.cancels(), 0);
+  assert.equal(voice.spoken.length, 1);
+});
+
+test("a real pause is measured after sentence completion, not its start", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(5000);
+  voice.finish();
+  const dog = { ...side, key: "dog:right:side", speech: "Dog on your right." };
+  assert.equal(voice.narrator.say(dog), false);
+  voice.advance(799);
+  assert.equal(voice.narrator.say(dog), false);
+  voice.advance(1);
+  voice.flushTimers();
+  assert.equal(voice.spoken.length, 2);
+  assert.equal(voice.spoken[1].text, dog.speech);
+  assert.equal(voice.cancels(), 0);
+});
+
+test("only the freshest pending scene is spoken after the sentence", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(3000);
+  const dog = { ...side, key: "dog:right:side", speech: "Dog on your right." };
+  voice.narrator.say(dog);
+  const chair = { ...side, key: "chair:left:side", speech: "Chair on your left." };
+  voice.narrator.say(chair);
+  voice.finish();
+  voice.advance(700);
+  voice.narrator.say(chair);
+  voice.advance(100);
+  voice.flushTimers();
+  assert.deepEqual(voice.spoken.map(item => item.text), [side.speech, chair.speech]);
+});
+
+test("a disappearing object clears pending speech without cutting the current sentence", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(3000);
+  voice.narrator.say({ ...side, key: "dog:right:side", speech: "Dog on right." });
+  voice.narrator.say(null);
+  voice.finish();
+  voice.advance(1000);
+  voice.flushTimers();
+  assert.equal(voice.spoken.length, 1);
+  assert.equal(voice.cancels(), 0);
+});
+
+test("stale pending updates expire instead of being narrated later", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(3000);
+  voice.narrator.say({ ...side, key: "dog:right:side", speech: "Dog on right." });
+  voice.advance(2000);
+  voice.finish();
+  voice.advance(800);
+  voice.flushTimers();
+  assert.equal(voice.spoken.length, 1);
+  assert.equal(voice.narrator.latest, null);
+});
+
+test("old completion callbacks cannot clear a newer priority warning", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  const old = voice.spoken[0];
+  voice.advance(1800);
+  voice.narrator.say(ahead);
+  old.onend();
+  assert.equal(voice.narrator.active, true);
+  assert.equal(voice.cancels(), 1);
+});
+
+test("oscillation between levels cannot repeatedly interrupt speech", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(1800);
+  voice.narrator.say(ahead);
+  voice.finish();
+  voice.advance(3000);
+  voice.narrator.say(side);
+  voice.advance(1600);
+  assert.equal(voice.narrator.say(ahead), false);
+  assert.equal(voice.cancels(), 1);
+});
+
+test("stop cancels the timer and discards all pending updates", () => {
+  const voice = voiceFixture();
+  voice.narrator.say(side);
+  voice.advance(3000);
+  voice.narrator.say({ ...side, key: "dog:right:side", speech: "Dog on right." });
+  voice.finish();
+  assert.equal(voice.timers.size, 1);
+  voice.narrator.stop();
+  voice.advance(1000);
+  voice.flushTimers();
+  assert.equal(voice.spoken.length, 1);
+  assert.equal(voice.timers.size, 0);
 });

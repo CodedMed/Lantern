@@ -47,11 +47,19 @@ Render website. The existing web app and legacy Expo app are preserved.
 - Excludes points near **classified floor boundary polygons**, not a bounding box, a guessed
   floor height or every horizontal table. Before floor classification, ground
   may be included in readings; side-selection suggestions are withheld.
-- Gives short **pause/check** cues, never a verified safe walking route. iOS
-  speech is throttled and not queued. A new warning can replace routine speech
-  (at most once a second); loss of a previously measured distance cancels old
-  speech immediately. Repeated missing frames do not cut that warning off.
-  No paid voice API is needed.
+- Gives short, action-first **pause/check** cues, never a verified safe walking
+  route. Ordinary distance, direction, and uncertainty changes finish the current
+  sentence. Only an escalation to a close-ahead warning can interrupt lower-priority
+  speech, bounded to avoid repeated interruptions during level oscillation.
+- Keeps only current-frame speech context, not an utterance backlog. Requires a
+  brief stable cue (0.45 s ordinary / 0.8 s unknown), uses an actual synthesis
+  completion callback and a 0.8 s gap, and can remind persistent context after
+  12 seconds. Close-ahead escalations do not wait for stability. These are UX
+  heuristics, not validated safety response times. Visual meters still clear
+  immediately even if a spoken snapshot finishes.
+- Repeat does not restart an active sentence. A voice-speed control is available;
+  VoiceOver voice/speed preferences take precedence through Apple's assistive
+  technology setting. iOS manages the speech audio session. No paid voice API.
 
 Each region explains missing meters: insufficient confident depth, outside the
 software range window, only classified floor sampled, or no supported surface

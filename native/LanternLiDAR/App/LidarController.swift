@@ -8,7 +8,7 @@ import UIKit
 
 /// All delegate callbacks and published state use the main queue. ARKit acquires
 /// depth itself; this app only samples 360 cells at <= 10 Hz, never queues frames.
-final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
+final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSpeechSynthesizerDelegate {
     let session = ARSession()
     @Published private(set) var running = false
     @Published private(set) var requestingPermission = false
@@ -17,8 +17,15 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var floorKnown = false
     @Published private(set) var cue = DepthGuidance.cue([:], floorKnown: false)
     @Published var voiceEnabled = true {
-        didSet { if !voiceEnabled { speech.stopSpeaking(at: .immediate) } }
+        didSet {
+            if !voiceEnabled { stopSpeech() }
+            else {
+                speechPolicy = DepthSpeechPolicy()
+                if running { say(cue, manual: true) }
+            }
+        }
     }
+    @Published var voiceSpeed: Double = 0.46
     var viewport = CGSize.zero
     let supported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
         && AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) != nil
@@ -31,11 +38,14 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
     private var expiryTimer: Timer?
     private let speech = AVSpeechSynthesizer()
     private var speechPolicy = DepthSpeechPolicy()
+    private var activeUtterance: AVSpeechUtterance?
 
     override init() {
         super.init()
         session.delegate = self
         session.delegateQueue = .main
+        speech.delegate = self
+        speech.usesApplicationAudioSession = false
     }
 
     func start() {
@@ -110,7 +120,6 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         expiryTimer?.invalidate()
         expiryTimer = nil
         session.pause()
-        speech.stopSpeaking(at: .immediate)
         clearReadings()
         status = "Camera off"
     }
@@ -121,29 +130,51 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         floorKnown = false
         lastReceived = nil
         cue = DepthGuidance.cue([:], floorKnown: false)
-        if stopSpeech { speech.stopSpeaking(at: .immediate) }
+        if stopSpeech { self.stopSpeech() }
     }
 
     private func loseDepth(_ message: String) {
-        let changedFromDistance = readings.values.contains { $0.meters != nil }
-        // Never leave a previous distance visible. Repeated missing frames must
-        // not cancel the same unknown warning every 100 ms before it finishes.
+        // Clear visual meters immediately, but do not turn every confidence
+        // dropout into a speech interruption. Offer only the current unknown cue.
         clearReadings(stopSpeech: false)
         status = message
-        if changedFromDistance { say(cue, replacingStaleDistance: true) }
+        if CACurrentMediaTime() - startedAt >= 1 { say(cue) }
     }
 
     func repeatCue() { say(cue, manual: true) }
 
-    private func say(_ cue: DepthCue, manual: Bool = false, replacingStaleDistance: Bool = false) {
+    private func stopSpeech() {
+        activeUtterance = nil
+        speech.stopSpeaking(at: .immediate)
+    }
+
+    private func say(_ cue: DepthCue, manual: Bool = false) {
         guard voiceEnabled, running else { return }
         let now = CACurrentMediaTime()
-        guard speechPolicy.shouldSpeak(cue, now: now, speaking: speech.isSpeaking, manual: manual, replacingStaleDistance: replacingStaleDistance) else { return }
-        speech.stopSpeaking(at: .immediate)
+        guard speechPolicy.shouldSpeak(cue, now: now, speaking: activeUtterance != nil || speech.isSpeaking, manual: manual) else { return }
+        // The policy permits this only for a higher-priority close-ahead cue.
+        // Normal changes and Repeat wait instead of cutting off a sentence.
+        if activeUtterance != nil || speech.isSpeaking { stopSpeech() }
         let utterance = AVSpeechUtterance(string: cue.speech)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        utterance.rate = Float(min(0.6, max(0.35, voiceSpeed)))
+        utterance.prefersAssistiveTechnologySettings = true
+        activeUtterance = utterance
         speech.speak(utterance)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        finishSpeech(utterance)
+    }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        finishSpeech(utterance)
+    }
+    private func finishSpeech(_ utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.activeUtterance === utterance else { return }
+            self.activeUtterance = nil
+            self.speechPolicy.didFinish(at: CACurrentMediaTime())
+        }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -165,13 +196,10 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         }
         lastReceived = frame.timestamp
         floorKnown = sampled.floorKnown
-        let aheadWasMeasured = readings[.ahead]?.meters != nil
         readings = smoother.update(sampled.readings, capturedAt: frame.timestamp, now: CACurrentMediaTime())
         cue = DepthGuidance.cue(readings, floorKnown: floorKnown)
         status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
-        // A low-confidence region is also a loss, even if this ARFrame itself
-        // is fresh. Do not finish speaking an old measured-ahead cue over it.
-        say(cue, replacingStaleDistance: aheadWasMeasured && readings[.ahead]?.meters == nil)
+        say(cue)
     }
 
     private func sample(frame: ARFrame, depth: CVPixelBuffer, confidence: CVPixelBuffer)

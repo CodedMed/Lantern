@@ -158,32 +158,51 @@ public struct DepthCue: Equatable, Sendable {
     public let speech: String
     public let key: String
     public let urgent: Bool
+    // Uncertainty and side changes are cautions, not reasons to cut off another
+    // warning. Only a new close-ahead warning may interrupt lower-priority speech.
+    public var speechPriority: Int { key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0 }
 }
 
-/// Speech scheduling only, not a safety guarantee. Visual unknown state is
-/// immediate; new warnings may interrupt routine speech rather than queue.
+/// Latest-frame speech scheduling, not a safety guarantee. No utterance backlog:
+/// callers keep offering the latest cue; normal changes wait for speech to finish.
 public struct DepthSpeechPolicy {
     private var lastKey: String?
     private var lastTime = -Double.infinity
+    private var lastPriority = -1
+    private var lastCloseWarningAt = -Double.infinity
+    private var finishedAt = -Double.infinity
+    private var candidateKey: String?
+    private var candidateSince = -Double.infinity
+    private var lastObserved = -Double.infinity
     public init() {}
-    public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false, replacingStaleDistance: Bool = false) -> Bool {
-        guard now.isFinite, now >= lastTime else { return false }
-        // Losing a number may interrupt an older measured cue immediately,
-        // but a brief recovery/loss must not restart the same unknown warning.
-        let replacesOldCue = replacingStaleDistance && cue.key != lastKey
-        if !manual && !replacesOldCue {
+    public mutating func didFinish(at now: Double) {
+        if now.isFinite, now >= lastTime { finishedAt = now }
+    }
+    public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false) -> Bool {
+        guard now.isFinite, now >= lastObserved, now >= lastTime, now >= finishedAt else { return false }
+        if cue.key != candidateKey || now - lastObserved > 0.7 {
+            candidateKey = cue.key
+            candidateSince = now
+        }
+        lastObserved = now
+        let escalates = cue.speechPriority == 2 && lastPriority < 2
+        if speaking {
+            // Repeat, low confidence, distance fluctuations and side switches
+            // must not restart the sentence. One genuine escalation may.
+            guard !manual, escalates, now - lastTime >= 1, now - lastCloseWarningAt >= 6 else { return false }
+        }
+        if !manual {
             let elapsed = now - lastTime
-            if cue.key == lastKey {
-                guard cue.urgent, elapsed >= 10, !speaking else { return false }
-            } else if cue.urgent {
-                // Bound chatter if confidence or scene changes rapidly.
-                guard elapsed >= 1 else { return false }
-            } else {
-                guard elapsed >= 3, !speaking else { return false }
-            }
+            let settle = cue.key == "unknown" ? 0.8 : escalates ? 0 : 0.45
+            guard now - candidateSince >= settle else { return false }
+            guard escalates || now - finishedAt >= 0.8 else { return false }
+            guard cue.key != lastKey || elapsed >= 12 else { return false }
+            guard escalates || elapsed >= 3 else { return false }
         }
         lastKey = cue.key
         lastTime = now
+        lastPriority = cue.speechPriority
+        if cue.speechPriority == 2 { lastCloseWarningAt = now }
         return true
     }
 }
@@ -192,7 +211,7 @@ public enum DepthGuidance {
     public static func cue(_ readings: [Sector: SectorReading], floorKnown: Bool) -> DepthCue {
         let ahead = readings[.ahead]?.meters
         guard let ahead else {
-            return DepthCue(title: "Distance unknown", detail: "Pause and inspect your surroundings. Missing depth does not mean clear space.", speech: "Distance unknown. Pause and check.", key: "unknown", urgent: true)
+            return DepthCue(title: "Distance unknown", detail: "Pause and inspect your surroundings. Missing depth does not mean clear space.", speech: "Pause. Distance uncertain. Hold the phone steady.", key: "unknown", urgent: true)
         }
         let text = String(format: "Surface ahead, about %.1f meters.", ahead)
         let closeSide = [Sector.left, .right].first { (readings[$0]?.meters ?? .infinity) < 0.75 }
@@ -205,10 +224,10 @@ public enum DepthGuidance {
                 if rm > lm + 0.4 && rm > 1.5 { check = "Check right." }
                 else if lm > rm + 0.4 && lm > 1.5 { check = "Check left." }
             }
-            return DepthCue(title: "Pause and check", detail: "\(text) \(check) This is not a verified walking route.", speech: "\(text) Pause. \(check)", key: "pause:\(check)", urgent: true)
+            return DepthCue(title: "Pause and check", detail: "\(text) \(check) This is not a verified walking route.", speech: "Pause. \(text) \(check)", key: "pause:\(check):\(Int((ahead * 2).rounded()))", urgent: true)
         }
         if let side = closeSide {
-            return DepthCue(title: "Surface close on \(side.rawValue)", detail: "Pause and inspect around you. Other hazards may be missed.", speech: "Surface close on \(side.rawValue). Pause and check.", key: "side:\(side.rawValue)", urgent: true)
+            return DepthCue(title: "Surface close on \(side.rawValue)", detail: "Pause and inspect around you. Other hazards may be missed.", speech: "Pause. Surface close on your \(side.rawValue).", key: "side:\(side.rawValue)", urgent: true)
         }
         return DepthCue(title: readings[.ahead]?.label ?? "Distance unknown", detail: "Surface depth, not a guarantee of clearance. Check before moving.", speech: text, key: "ahead:\(Int((ahead * 2).rounded()))", urgent: false)
     }

@@ -31,12 +31,14 @@ export function getGuidance(detections) {
         : null;
       const pauseCue = prominent
         ? advice.check === "around" || advice.check === "both"
-          ? " Pause."
-          : ` Pause; check ${advice.check}.`
+          ? ""
+          : ` Check ${advice.check}.`
         : "";
-      const speech = roundedRange
-        ? `${name}, about ${roundedRange} meters.${pauseCue}`
-        : `${name} ${position === "ahead" ? "ahead" : `on ${position}`}.${pauseCue}`;
+      const location = position === "ahead" ? "ahead" : `on the ${position}`;
+      const observation = roundedRange
+        ? `${name} ${location}, about ${roundedRange} meters.`
+        : `${name} ${location}.`;
+      const speech = `${prominent ? "Pause. " : ""}${observation}${pauseCue}`;
       return {
         ...item,
         position,

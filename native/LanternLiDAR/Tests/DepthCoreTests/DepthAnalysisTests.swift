@@ -201,54 +201,121 @@ final class DepthAnalysisTests: XCTestCase {
 
     func testNewWarningCanInterruptRoutineSpeech() {
         var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
         XCTAssertTrue(policy.shouldSpeak(closeCue, now: 11, speaking: true))
     }
 
-    func testSpeechPolicyBoundsRapidWarningChangesAndRepeats() {
+    func testUnknownAndDirectionChangesFinishTheCurrentWarning() {
         var policy = DepthSpeechPolicy()
         let unknown = DepthGuidance.cue([:], floorKnown: false)
         XCTAssertTrue(policy.shouldSpeak(closeCue, now: 10, speaking: false))
         XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.5, speaking: true))
-        XCTAssertTrue(policy.shouldSpeak(unknown, now: 11, speaking: true))
-        XCTAssertFalse(policy.shouldSpeak(unknown, now: 20.9, speaking: false))
-        XCTAssertFalse(policy.shouldSpeak(unknown, now: 21, speaking: true))
-        XCTAssertTrue(policy.shouldSpeak(unknown, now: 21, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 11, speaking: true))
+        policy.didFinish(at: 12)
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 12.2, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 12.7, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 13, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 14, speaking: true))
     }
 
-    func testRoutineSpeechDoesNotQueueOrRepeatUnchangedCue() {
+    func testRoutineSpeechWaitsForCompletionPlusANaturalGap() {
         var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
-        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 100, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
         let changed = DepthGuidance.cue([.ahead: SectorReading(meters: 3, coverage: 1)], floorKnown: false)
-        XCTAssertFalse(policy.shouldSpeak(changed, now: 101, speaking: true))
-        XCTAssertTrue(policy.shouldSpeak(changed, now: 101, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(changed, now: 14, speaking: true))
+        policy.didFinish(at: 15)
+        XCTAssertFalse(policy.shouldSpeak(changed, now: 15.1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(changed, now: 15.6, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(changed, now: 15.9, speaking: false))
     }
 
-    func testManualRepeatAndDepthLossCanReplaceSpeechImmediately() {
+    func testRepeatDoesNotCutOffAnActiveSentence() {
         var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
-        XCTAssertTrue(policy.shouldSpeak(DepthGuidance.cue([:], floorKnown: false), now: 10.1, speaking: true, replacingStaleDistance: true))
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10.2, speaking: true, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 10.1, speaking: true, manual: true))
+        policy.didFinish(at: 12)
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 12.2, speaking: false, manual: true))
     }
 
     func testIntermittentDepthDoesNotRepeatedlyRestartTheSameUnknownWarning() {
         var policy = DepthSpeechPolicy()
         let unknown = DepthGuidance.cue([:], floorKnown: false)
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
-        XCTAssertTrue(policy.shouldSpeak(unknown, now: 10.1, speaking: true, replacingStaleDistance: true))
-        // Short confident frames between unknown frames need not have been
-        // spoken. Losing them must not cut off the ongoing unknown sentence.
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.1, speaking: true))
         XCTAssertFalse(policy.shouldSpeak(routineCue, now: 10.2, speaking: true))
-        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.3, speaking: true, replacingStaleDistance: true))
-        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.5, speaking: true, replacingStaleDistance: true))
-        XCTAssertTrue(policy.shouldSpeak(unknown, now: 20.2, speaking: false, replacingStaleDistance: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.3, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.5, speaking: true))
+        policy.didFinish(at: 12)
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 12.1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 12.6, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 13, speaking: false))
     }
 
     func testSpeechPolicyRejectsNonFiniteAndBackwardTime() {
         var policy = DepthSpeechPolicy()
         XCTAssertFalse(policy.shouldSpeak(routineCue, now: .nan, speaking: false))
-        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
         XCTAssertFalse(policy.shouldSpeak(closeCue, now: 9, speaking: false, manual: true))
+    }
+
+    func testFlickeringCandidatesAreNotNarrated() {
+        var policy = DepthSpeechPolicy()
+        let unknown = DepthGuidance.cue([:], floorKnown: false)
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 1.2, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 1.4, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 1.6, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 2, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 2.5, speaking: false))
+    }
+
+    func testSamePriorityCloseAheadChangesNeverInterrupt() {
+        var policy = DepthSpeechPolicy()
+        let anotherDirection = DepthGuidance.cue([
+            .ahead: SectorReading(meters: 0.8, coverage: 1),
+            .left: SectorReading(meters: 1, coverage: 1),
+            .right: SectorReading(meters: 3, coverage: 1)
+        ], floorKnown: true)
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(anotherDirection, now: 3, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(closeCue, now: 5, speaking: true))
+    }
+
+    func testLevelOscillationDoesNotRepeatedlyInterrupt() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 11, speaking: true))
+        policy.didFinish(at: 13)
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 14, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 14.5, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(closeCue, now: 15.5, speaking: true))
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 17, speaking: true))
+    }
+
+    func testPersistentContextCanBeRepeatedWithoutEveryFrameChatter() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 10, speaking: false))
+        policy.didFinish(at: 12)
+        XCTAssertFalse(policy.shouldSpeak(closeCue, now: 20, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(closeCue, now: 21.5, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 22, speaking: false))
+    }
+
+    func testShortWarningsPutPauseBeforeDistanceOrDirection() {
+        XCTAssertTrue(closeCue.speech.hasPrefix("Pause."))
+        XCTAssertTrue(DepthGuidance.cue([:], floorKnown: false).speech.hasPrefix("Pause."))
+        XCTAssertFalse(closeCue.speech.contains("walk"))
+    }
+
+    func testCloserDistanceCanUpdateAfterWarningFinishesWithoutInterruptingIt() {
+        var policy = DepthSpeechPolicy()
+        let closer = DepthGuidance.cue([.ahead: SectorReading(meters: 0.2, coverage: 1)], floorKnown: false)
+        XCTAssertNotEqual(closer.key, closeCue.key)
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 10, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(closer, now: 11, speaking: true))
+        policy.didFinish(at: 12.5)
+        XCTAssertFalse(policy.shouldSpeak(closer, now: 12.6, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(closer, now: 13, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(closer, now: 13.4, speaking: false))
     }
 }

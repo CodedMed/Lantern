@@ -474,6 +474,11 @@ function App() {
         title: "Detection is catching up.",
         detail: "Hold still. Do not rely on delayed results.",
       });
+      if (currentSettings.speech && !currentModal)
+        narratorRef.current.say(
+          { key: "delayed", level: "status", speech: "Pause. Detection is delayed." },
+          { rate: currentSettings.rate },
+        );
       return;
     }
     result = {
@@ -502,11 +507,11 @@ function App() {
       (currentCue.alert?.range && !guidance.alert?.range)
     ) {
       setCue(guidance);
-      if (currentSettings.speech && !currentModal && confirmed?.alert)
-        narratorRef.current.say(confirmed.alert, {
-          rate: currentSettings.rate,
-        });
     }
+    if (currentSettings.speech && !currentModal)
+      narratorRef.current.say(confirmed?.alert || null, {
+        rate: currentSettings.rate,
+      });
     if (currentSource.type === "photo") loopRef.current.stop();
   }
   function togglePause() {
@@ -775,7 +780,11 @@ function App() {
         </div>
       </section>
       <section className="feedback" aria-label="Current object alert">
-        <div className="cue" aria-live="polite" aria-atomic="true">
+        <div
+          className="cue"
+          aria-live={settings.speech ? "off" : "polite"}
+          aria-atomic="true"
+        >
           <h2>{cue.title}</h2>
           <p>
             {cue.advice
@@ -1150,6 +1159,13 @@ function App() {
                   }
                 />
               </label>
+              <p className="note">
+                Ordinary updates finish their sentence before the next message.
+                Only a higher-priority central warning may interrupt. Repeat does
+                not restart speech already playing. When voice alerts are on,
+                the changing guidance card does not also announce every update
+                through your screen reader.
+              </p>
               <button
                 className="test-voice"
                 disabled={!settings.speech || !speechAvailable}
