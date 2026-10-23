@@ -13,26 +13,11 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
     @Published private(set) var running = false
     @Published private(set) var requestingPermission = false
     @Published private(set) var status = "Camera off"
-    @Published private(set) var readings: [Sector: SectorReading] = [:]
     @Published private(set) var floorKnown = false
-    @Published private(set) var inspection: InspectionAssessment = .stale
-    @Published private(set) var obstacleDecision: ObstacleDecision = .stop(.unknown)
-    @Published private(set) var obstacleCorridors: [Sector: ObstacleCorridor] = [:]
-    @Published private(set) var obstaclePaths: [ObstaclePath] = []
-    @Published var obstacleGuidanceEnabled = false {
-        didSet {
-            obstacleGuide.reset()
-            obstacleMemory.reset()
-            obstacleFloorLevel = nil
-            obstacleDecision = .stop(.unknown)
-            obstacleCorridors = [:]
-            obstaclePaths = []
-            stopSpeech()
-            speechPolicy = DepthSpeechPolicy()
-            cue = obstacleGuidanceEnabled ? obstacleDecision.cue : DepthGuidance.cue(readings, floorKnown: floorKnown, inspection: inspection)
-        }
-    }
-    @Published private(set) var cue = DepthGuidance.cue([:], floorKnown: false)
+    @Published private(set) var liveAction: LiveAction = .starting
+    @Published private(set) var regions: [Sector: LiveRegion] = [:]
+    @Published private(set) var analysisMilliseconds: Double?
+    @Published private(set) var cue = LiveAction.starting.cue()
     @Published var voiceEnabled = true {
         didSet {
             if !voiceEnabled { stopSpeech() }
@@ -51,11 +36,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
     private var startedAt = Double.infinity
     private var lastProcessed = -Double.infinity
     private var lastReceived: Double?
-    private var smoother = DepthSmoother()
-    private var inspectionGuide = DepthInspectionGuide()
-    private var obstacleGuide = ObstacleGuide()
-    private var obstacleMemory = ObstacleDepthMemory()
-    private var obstacleFloorLevel: Float?
+    private var liveGuide = LiveProximityGuide()
     private var expiryTimer: Timer?
     private let speech = AVSpeechSynthesizer()
     private var speechPolicy = DepthSpeechPolicy()
@@ -120,13 +101,13 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         startedAt = CACurrentMediaTime()
         session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         running = true
-        status = "Starting LiDAR. Keep the phone upright and pointing along your walking direction."
+        status = "Starting LiDAR · aim forward"
         expiryTimer?.invalidate()
         expiryTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, self.running else { return }
             guard let stamp = self.lastReceived,
                   DepthAnalysis.isFresh(capturedAt: stamp, now: CACurrentMediaTime()) else {
-                self.loseDepth("Waiting for fresh, confident LiDAR depth. Hold steady and aim forward.")
+                self.loseDepth("Waiting for fresh LiDAR depth")
                 return
             }
         }
@@ -146,19 +127,13 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
     }
 
     private func clearReadings(stopSpeech: Bool = true) {
-        smoother.reset()
-        inspectionGuide.reset()
-        obstacleGuide.reset()
-        obstacleMemory.reset()
-        obstacleFloorLevel = nil
-        obstacleDecision = .stop(.unknown)
-        obstacleCorridors = [:]
-        obstaclePaths = []
-        inspection = .stale
-        readings = [:]
+        liveGuide.reset()
+        liveAction = .starting
+        regions = [:]
+        analysisMilliseconds = nil
         floorKnown = false
         lastReceived = nil
-        cue = obstacleGuidanceEnabled ? obstacleDecision.cue : DepthGuidance.cue([:], floorKnown: false)
+        cue = LiveAction.starting.cue()
         if stopSpeech { self.stopSpeech() }
     }
 
@@ -166,25 +141,33 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         // Clear visual meters immediately, but do not turn every confidence
         // dropout into a speech interruption. Offer only the current unknown cue.
         clearReadings(stopSpeech: false)
+        liveAction = .stop(.uncertain)
+        cue = liveAction.cue()
         status = message
         if CACurrentMediaTime() - startedAt >= 1 { say(cue) }
     }
 
     func repeatCue() {
-        revalidateManualReadout()
+        guard revalidateManualReadout() else { return }
         say(cue, manual: true)
     }
     func readDistances() {
-        revalidateManualReadout()
-        say(DepthGuidance.distanceReadout(readings), manual: true)
+        guard revalidateManualReadout() else { return }
+        say(LiveProximityGuide.distanceReadout(regions), manual: true)
     }
-    private func revalidateManualReadout() {
+    private func revalidateManualReadout() -> Bool {
         guard let stamp = lastReceived, DepthAnalysis.isFresh(capturedAt: stamp, now: CACurrentMediaTime()) else {
             // A button tap must not use an old direction while waiting for the
             // next expiry-timer tick. Do not interrupt an active sentence.
             clearReadings(stopSpeech: false)
-            return
+            liveAction = .stop(.uncertain)
+            cue = liveAction.cue()
+            // A stale-data STOP is an automatic revocation, not an ordinary
+            // manual readout that must wait for an obsolete turn to finish.
+            say(cue)
+            return false
         }
+        return true
     }
 
     private func stopSpeech() {
@@ -223,6 +206,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard running, frame.timestamp >= startedAt, frame.timestamp - lastProcessed >= 0.1 else { return }
+        let analysisStarted = CACurrentMediaTime()
         lastProcessed = frame.timestamp
         guard DepthAnalysis.isFresh(capturedAt: frame.timestamp, now: CACurrentMediaTime()) else {
             loseDepth("Depth delayed. Pause and wait for a fresh view.")
@@ -240,7 +224,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         }
         lastReceived = frame.timestamp
         floorKnown = sampled.floorKnown
-        readings = smoother.update(sampled.readings, capturedAt: frame.timestamp, now: CACurrentMediaTime())
+        regions = sampled.regions
         // Use the actual portrait view axes, not ARKit's landscape image axes.
         // Compare raw current-frame readings for direction eligibility: display
         // smoothing must not conceal a newly nearer candidate-side surface.
@@ -249,20 +233,16 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
             position: SIMD3(Double(camera[3].x), Double(camera[3].y), Double(camera[3].z)),
             forward: SIMD3(-Double(camera[2].x), -Double(camera[2].y), -Double(camera[2].z)),
             up: SIMD3(Double(camera[1].x), Double(camera[1].y), Double(camera[1].z)))
-        inspection = inspectionGuide.update(sampled.readings, floorKnown: floorKnown, pose: pose,
-                                             capturedAt: frame.timestamp, now: CACurrentMediaTime())
-        obstacleCorridors = sampled.corridors
-        obstaclePaths = sampled.paths
-        obstacleDecision = obstacleGuide.update(sampled.paths, pose: pose, floorLevel: sampled.floorLevel,
-                                                 capturedAt: frame.timestamp, now: CACurrentMediaTime())
-        cue = obstacleGuidanceEnabled ? obstacleDecision.cue(aheadMeters: sampled.paths.first(where: { $0.degrees == 0 })?.corridor.nearestObstacle)
-            : DepthGuidance.cue(readings, floorKnown: floorKnown, inspection: inspection)
-        status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
+        liveAction = liveGuide.update(sampled.regions, pose: pose, capturedAt: frame.timestamp, now: CACurrentMediaTime())
+        let ahead = sampled.regions[.ahead]
+        cue = liveAction.cue(meters: ahead?.nearestHit ?? ahead?.reading.meters)
+        status = "LiDAR live · automatic proximity alerts"
+        analysisMilliseconds = (CACurrentMediaTime() - analysisStarted) * 1000
         say(cue)
     }
 
     private func sample(frame: ARFrame, depth: CVPixelBuffer, confidence: CVPixelBuffer)
-        -> (readings: [Sector: SectorReading], floorKnown: Bool, corridors: [Sector: ObstacleCorridor], paths: [ObstaclePath], floorLevel: Double?)? {
+        -> (regions: [Sector: LiveRegion], floorKnown: Bool)? {
         guard CVPixelBufferGetPixelFormatType(depth) == kCVPixelFormatType_DepthFloat32,
               CVPixelBufferGetPixelFormatType(confidence) == kCVPixelFormatType_OneComponent8 else { return nil }
         let width = CVPixelBufferGetWidth(depth), height = CVPixelBufferGetHeight(depth)
@@ -276,9 +256,13 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         guard let db = CVPixelBufferGetBaseAddress(depth), let cb = CVPixelBufferGetBaseAddress(confidence) else { return nil }
         let depthStride = CVPixelBufferGetBytesPerRow(depth), confidenceStride = CVPixelBufferGetBytesPerRow(confidence)
         guard depthStride >= width * MemoryLayout<Float>.stride, confidenceStride >= width else { return nil }
-        let displayToImage = frame.displayTransform(for: .portrait, viewportSize: viewport).inverted()
         let resolution = frame.camera.imageResolution
         let intrinsics = frame.camera.intrinsics
+        let worldToCamera = simd_inverse(frame.camera.transform)
+        var forward = SIMD3(-frame.camera.transform[2].x, Float(0), -frame.camera.transform[2].z)
+        guard simd_length(forward).isFinite, simd_length(forward) > 0.1 else { return nil }
+        forward = simd_normalize(forward)
+        let right = SIMD3(-forward.z, Float(0), forward.x)
         let floors = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter {
             $0.alignment == .horizontal && $0.classification == .floor
         }
@@ -292,23 +276,25 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
                 return SIMD2<Double>(Double(v.x), Double(v.z))
             }
             guard boundary.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
-            let center = anchor.transform * SIMD4<Float>(anchor.center.x, anchor.center.y, anchor.center.z, 1)
-            return FloorPatch(inverse: simd_inverse(anchor.transform), y: anchor.center.y, boundary: boundary,
-                              worldHeight: center.y, isLevel: anchor.transform[1].y > 0.98)
+            return FloorPatch(inverse: simd_inverse(anchor.transform), y: anchor.center.y, boundary: boundary)
         }
-        var result: [Sector: SectorReading] = [:]
+        var result: [Sector: LiveRegion] = [:]
         for sector in Sector.allCases {
             var cells: [DepthCell] = []
-            let bounds = sector.horizontalBounds
             for row in 0..<DepthAnalysis.rows {
                 for column in 0..<DepthAnalysis.columns {
-                    let sx = bounds.lowerBound + (Double(column) + 0.5) / Double(DepthAnalysis.columns) * (bounds.upperBound - bounds.lowerBound)
-                    let sy = 0.3 + (Double(row) + 0.5) / Double(DepthAnalysis.rows) * 0.5
-                    let imagePoint = CGPoint(x: sx, y: sy).applying(displayToImage)
-                    guard imagePoint.x >= 0, imagePoint.x < 1, imagePoint.y >= 0, imagePoint.y < 1 else {
+                    guard let ray = LiveRayGeometry.ray(sector, column: column, row: row) else { cells.append(.unknown); continue }
+                    // Gravity-level rays, not a floor/ceiling crop guessed from
+                    // the screen. Floor anchors improve filtering if available;
+                    // no floor anchor or scan is required to process this frame.
+                    let direction = right * Float(ray.x) + SIMD3<Float>(0, Float(ray.y), 0) + forward * Float(ray.z)
+                    let cameraRay = worldToCamera * SIMD4(direction.x, direction.y, direction.z, 0)
+                    guard let imagePoint = LiveRayGeometry.imagePoint(cameraRay: SIMD3(Double(cameraRay.x), Double(cameraRay.y), Double(cameraRay.z)),
+                        fx: Double(intrinsics[0][0]), fy: Double(intrinsics[1][1]), cx: Double(intrinsics[2][0]), cy: Double(intrinsics[2][1]),
+                        width: Double(resolution.width), height: Double(resolution.height)) else {
                         cells.append(.unknown); continue
                     }
-                    let px = Int(Double(imagePoint.x) * Double(width)), py = Int(Double(imagePoint.y) * Double(height))
+                    let px = Int(imagePoint.x * Double(width)), py = Int(imagePoint.y * Double(height))
                     let z = db.advanced(by: py * depthStride).assumingMemoryBound(to: Float.self)[px]
                     let quality = cb.advanced(by: py * confidenceStride).assumingMemoryBound(to: UInt8.self)[px]
                     guard quality == UInt8(ARConfidenceLevel.high.rawValue),
@@ -328,79 +314,11 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
                     cells.append(DepthCell(meters: meters, confidence: quality, isKnownFloor: isFloor))
                 }
             }
-            result[sector] = DepthAnalysis.analyze(cells)
+            result[sector] = LiveRegion(cells: cells)
         }
-        let walking = obstacleGuidanceEnabled ? walkingCorridors(frame: frame, depthBase: db, confidenceBase: cb,
-            width: width, height: height, depthStride: depthStride, confidenceStride: confidenceStride,
-            floorPatches: floorPatches) : (paths: [], floorLevel: nil)
-        let summaries = Dictionary(uniqueKeysWithValues: walking.paths.filter { abs($0.degrees) == 30 || $0.degrees == 0 }.map { ($0.sector, $0.corridor) })
-        return (result, !floorPatches.isEmpty, summaries, walking.paths, walking.floorLevel)
+        return (result, !floorPatches.isEmpty)
     }
 
-    /// All buffers remain locked by sample(). Uses the full camera/depth field,
-    /// not the three display-region summaries. Nothing retains an ARFrame.
-    private func walkingCorridors(frame: ARFrame, depthBase: UnsafeMutableRawPointer, confidenceBase: UnsafeMutableRawPointer,
-                                  width: Int, height: Int, depthStride: Int, confidenceStride: Int,
-                                  floorPatches: [FloorPatch]) -> (paths: [ObstaclePath], floorLevel: Double?) {
-        let origin = SIMD3(frame.camera.transform[3].x, frame.camera.transform[3].y, frame.camera.transform[3].z)
-        let levels = floorPatches.filter {
-            $0.isLevel && $0.worldHeight.isFinite && (0.6...1.7).contains(origin.y - $0.worldHeight)
-        }.map(\.worldHeight)
-        guard let level = levels.max() else { obstacleMemory.reset(); obstacleFloorLevel = nil; return ([], nil) }
-        if let previous = obstacleFloorLevel, abs(previous - level) > 0.08 { obstacleMemory.reset() }
-        obstacleFloorLevel = level
-        var forward = SIMD3(-frame.camera.transform[2].x, Float(0), -frame.camera.transform[2].z)
-        guard simd_length(forward).isFinite, simd_length(forward) > 0.1 else { obstacleMemory.reset(); return ([], Double(level)) }
-        forward = simd_normalize(forward)
-        let right = SIMD3(-forward.z, Float(0), forward.x)
-        let intrinsics = frame.camera.intrinsics, resolution = frame.camera.imageResolution
-        let fx = Double(intrinsics[0][0]), fy = Double(intrinsics[1][1])
-        let cx = Double(intrinsics[2][0]), cy = Double(intrinsics[2][1])
-        func worldPoint(_ p: SIMD3<Double>) -> SIMD3<Double> {
-            SIMD3(Double(origin.x) + Double(right.x) * p.x + Double(forward.x) * p.z,
-                  Double(level) + p.y, Double(origin.z) + Double(right.z) * p.x + Double(forward.z) * p.z)
-        }
-        // Bound storage and CPU independently of the camera's full resolution.
-        // Mask uncertainty now; an old clear patch cannot replace new bad depth.
-        let columns = 64, rows = 48
-        var depths = Array(repeating: Float.nan, count: columns * rows)
-        for row in 0..<rows {
-            for col in 0..<columns {
-                let px = min(width - 1, Int((Double(col) + 0.5) / Double(columns) * Double(width)))
-                let py = min(height - 1, Int((Double(row) + 0.5) / Double(rows) * Double(height)))
-                if confidenceBase.advanced(by: py * confidenceStride).assumingMemoryBound(to: UInt8.self)[px] == 2 {
-                    depths[row * columns + col] = depthBase.advanced(by: py * depthStride).assumingMemoryBound(to: Float.self)[px]
-                }
-            }
-        }
-        func vector(_ v: SIMD4<Float>) -> SIMD3<Double> { SIMD3(Double(v.x), Double(v.y), Double(v.z)) }
-        guard let snapshot = ObstacleDepthSnapshot(timestamp: frame.timestamp, position: vector(frame.camera.transform[3]),
-            right: vector(frame.camera.transform[0]), up: vector(frame.camera.transform[1]), back: vector(frame.camera.transform[2]),
-            fx: fx / Double(resolution.width), fy: fy / Double(resolution.height),
-            cx: cx / Double(resolution.width), cy: cy / Double(resolution.height),
-            width: columns, height: rows, depths: depths) else { obstacleMemory.reset(); return ([], Double(level)) }
-        obstacleMemory.insert(snapshot)
-        func localPoints(turning: Bool) -> [SIMD3<Double>] {
-            obstacleMemory.hits(now: frame.timestamp, turning: turning).map { world in
-                let delta = world - vector(frame.camera.transform[3])
-                return SIMD3(delta.x * Double(right.x) + delta.z * Double(right.z), world.y - Double(level),
-                             delta.x * Double(forward.x) + delta.z * Double(forward.z))
-            }
-        }
-        let forwardPoints = localPoints(turning: false), turningPoints = localPoints(turning: true)
-        let paths = ObstacleGeometry.headings.map { degrees in
-            let groundSupported = ObstacleGeometry.groundChecks(degrees: degrees).allSatisfy { p in
-                let w = worldPoint(p)
-                return floorPatches.contains { $0.contains(SIMD4(Float(w.x), Float(w.y), Float(w.z), 1)) }
-            }
-            let probes = ObstacleGeometry.probes(degrees: degrees).map {
-                obstacleMemory.probe(worldPoint($0), now: frame.timestamp, turning: degrees != 0)
-            }
-            return ObstaclePath(degrees: degrees, corridor: ObstacleCorridor(probes: probes, floorSupported: groundSupported,
-                nearestObstacle: ObstacleGeometry.obstacleRange(degrees == 0 ? forwardPoints : turningPoints, degrees: degrees)))
-        }
-        return (paths, Double(level))
-    }
 
     func sessionWasInterrupted(_ session: ARSession) {
         stop()
@@ -416,8 +334,6 @@ private struct FloorPatch {
     let inverse: simd_float4x4
     let y: Float
     let boundary: [SIMD2<Double>]
-    let worldHeight: Float
-    let isLevel: Bool
     func contains(_ world: SIMD4<Float>) -> Bool {
         let local = inverse * world
         return abs(local.y - y) < 0.08 && FloorBoundary.contains(SIMD2(Double(local.x), Double(local.z)), vertices: boundary)

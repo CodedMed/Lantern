@@ -1,6 +1,283 @@
 import XCTest
 @testable import DepthCore
 
+final class LiveProximityTests: XCTestCase {
+    private var pose: InspectionPose { InspectionPose(position: .zero, forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))! }
+    private func cells(_ meters: Double = 3, confidence: UInt8 = 2, floor: Bool = false) -> [DepthCell] {
+        Array(repeating: DepthCell(meters: meters, confidence: confidence, isKnownFloor: floor), count: 120)
+    }
+    private func region(_ meters: Double?) -> LiveRegion { LiveRegion(cells: meters.map { cells($0) } ?? Array(repeating: .unknown, count: 120)) }
+    private func scene(_ ahead: Double? = 3, _ left: Double? = 3, _ right: Double? = 3) -> [Sector: LiveRegion] {
+        [.ahead: region(ahead), .left: region(left), .right: region(right)]
+    }
+    private func settle(_ guide: inout LiveProximityGuide, _ input: [Sector: LiveRegion], start: Double = 1) -> LiveAction {
+        var action = LiveAction.starting
+        for i in 0...5 {
+            let stamp = start + Double(i) * 0.1
+            action = guide.update(input, pose: pose, capturedAt: stamp, now: stamp)
+        }
+        return action
+    }
+    func testTwoMeterWallGivesImmediateWarningWithoutFloorOrSetup() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(2.2, nil, nil), pose: pose, capturedAt: 1, now: 1), .caution)
+    }
+    func testForwardViewDoesNotNeedBothSidesMeasured() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(3, nil, nil), pose: pose, capturedAt: 1, now: 1), .ahead)
+    }
+    func testCloseObstacleSuggestsMeasuredLeftWithoutFloorScan() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2, 2.7, 1.6)), .turn(.left))
+    }
+    func testCloseObstacleSuggestsRightSymmetrically() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2, 1.6, 2.7)), .turn(.right))
+    }
+    func testUnknownOppositeSideDoesNotVetoMeasuredAlternative() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2, 3, nil)), .turn(.left))
+    }
+    func testUnknownSideIsNeverChosenAsFartherSpace() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2, nil, nil)), .stop(.obstacle))
+    }
+    func testFrontUnknownCannotProduceTurnOrForwardAdvice() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(nil, 3, 3)), .stop(.uncertain))
+    }
+    func testEmergencyCloseHitOverridesAnySuggestedSideImmediately() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, nil))
+        XCTAssertEqual(guide.update(scene(0.4, 3, 3), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.close))
+    }
+    func testVeryCloseSideAlsoOverridesForwardView() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(3, 0.4, 3), pose: pose, capturedAt: 1, now: 1), .stop(.close))
+    }
+    func testSideProximityWarnsWithoutClaimingOppositeSideIsOpen() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(3, 0.9, nil), pose: pose, capturedAt: 1, now: 1), .sideClose(.left))
+        XCTAssertTrue(LiveAction.sideClose(.left).detail.contains("not assuming"))
+    }
+    func testIsolatedThinCloseSampleOverridesFarPatch() {
+        var grid = cells(3); grid[55] = DepthCell(meters: 0.4, confidence: 2)
+        let front = LiveRegion(cells: grid)
+        XCTAssertEqual(front.reading.meters, 3)
+        XCTAssertEqual(front.nearestHit, 0.4)
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update([.ahead: front], pose: pose, capturedAt: 1, now: 1), .stop(.close))
+    }
+    func testSingleCloserSideHitPreventsMisleadingTurnTowardFarWall() {
+        var side = cells(3); side[55] = DepthCell(meters: 1, confidence: 2)
+        let input: [Sector: LiveRegion] = [.ahead: region(1.2), .left: LiveRegion(cells: side), .right: region(3)]
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, input), .turn(.right))
+    }
+    func testTurnRequiresDistinctFramesAndBriefStableSide() {
+        var guide = LiveProximityGuide()
+        let input = scene(1.2, 3, nil)
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1, now: 1), .stop(.obstacle))
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.1, now: 1.1), .stop(.obstacle))
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.2, now: 1.2), .stop(.obstacle))
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.3, now: 1.3), .turn(.left))
+    }
+    func testLostAlternativeRevokesTurnInTheSameFrame() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, nil))
+        XCTAssertEqual(guide.update(scene(1.2, nil, nil), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.obstacle))
+    }
+    func testTurnSwitchCancelsOldSideBeforeNewInstruction() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, 2.2))
+        XCTAssertEqual(guide.update(scene(1.2, nil, 3), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
+        XCTAssertEqual(settle(&guide, scene(1.2, nil, 3), start: 1.7), .turn(.right))
+    }
+    func testSmallSideDifferencesDoNotFlipConfirmedTurn() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, 2.2))
+        XCTAssertEqual(guide.update(scene(1.2, 2.7, 3), pose: pose, capturedAt: 1.6, now: 1.6), .turn(.left))
+    }
+    func testBlockedSidesDoNotInventAnEscapeRoute() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2, 1.5, 1.5)), .stop(.obstacle))
+    }
+    func testLowConfidenceCannotProduceSideHint() {
+        for quality: UInt8 in [0, 1, 255] {
+            var guide = LiveProximityGuide()
+            XCTAssertEqual(settle(&guide, [.ahead: region(1.2), .left: LiveRegion(cells: cells(3, confidence: quality))]), .stop(.obstacle))
+        }
+    }
+    func testMissingEntireHeightBandPreventsSideHint() {
+        var grid = cells(3)
+        for i in 0..<40 { grid[i] = .unknown }
+        XCTAssertFalse(LiveRegion(cells: grid).supportsAlternative(to: 1.2))
+    }
+    func testUnobservedLateralStripPreventsSideHint() {
+        var grid = cells(3)
+        for row in 0..<12 { grid[row * 10 + 9] = .unknown }
+        XCTAssertFalse(LiveRegion(cells: grid).supportsAlternative(to: 1.2))
+    }
+    func testKnownFloorCannotBecomeOpenSideOrCloseObstacle() {
+        let floor = LiveRegion(cells: cells(0.4, floor: true))
+        XCTAssertNil(floor.nearestHit)
+        XCTAssertFalse(floor.supportsAlternative(to: 1.2))
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update([.ahead: floor], pose: pose, capturedAt: 1, now: 1), .stop(.uncertain))
+    }
+    func testMostlyFloorWithTinyFarPatchCannotSuggestTurn() {
+        var grid = cells(1, floor: true)
+        for i in [44,45,46,54,55,56] { grid[i] = DepthCell(meters: 3, confidence: 2) }
+        let partial = LiveRegion(cells: grid)
+        XCTAssertEqual(partial.reading.meters, 3)
+        XCTAssertFalse(partial.supportsAlternative(to: 1.2))
+    }
+    func testMalformedAndNonfiniteDataStayUnknown() {
+        for input in [[], cells(.nan), cells(.infinity), cells(-1), cells(8)] {
+            let data = LiveRegion(cells: input)
+            XCTAssertNil(data.nearestHit)
+            XCTAssertFalse(data.supportsAhead)
+            XCTAssertFalse(data.supportsAlternative(to: 1.2))
+        }
+    }
+    func testStaleFutureDuplicateOrReversedFramesWithdrawTurn() {
+        for (stamp, now) in [(1.5,1.6), (1.4,1.6), (3,2), (2,2.6), (Double.nan,2)] {
+            var guide = LiveProximityGuide()
+            _ = settle(&guide, scene(1.2, 3, nil))
+            XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: pose, capturedAt: stamp, now: now), .stop(.uncertain))
+        }
+    }
+    func testLongGapRequiresNewTurnStabilization() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, nil))
+        XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: pose, capturedAt: 3, now: 3), .stop(.obstacle))
+    }
+    func testTurningBodyWithdrawsOldDirection() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2, 3, nil))
+        let angle = 15.0 * .pi / 180
+        let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle),0,-cos(angle)), up: SIMD3(0,1,0))!
+        XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: rotated, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
+    }
+    func testNoDirectionSurvivesGradualCumulativeTurn() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2,3,nil))
+        var rechecked = false
+        for i in 1...6 {
+            let angle = Double(i * 2) * .pi / 180
+            let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle),0,-cos(angle)), up: SIMD3(0,1,0))!
+            let stamp = 1.5 + Double(i) * 0.1
+            if guide.update(scene(1.2,3,nil), pose: rotated, capturedAt: stamp, now: stamp) == .stop(.rechecking) { rechecked = true }
+        }
+        XCTAssertTrue(rechecked)
+    }
+    func testForwardDepthRecoveryDoesNotRequireStoppingPhoneMotion() {
+        var guide = LiveProximityGuide()
+        for i in 0...5 {
+            let moving = InspectionPose(position: SIMD3(0,0,-Double(i)*0.05), forward: SIMD3(0,0,-1), up: SIMD3(0,1,0))!
+            let stamp = 1 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(3,nil,nil), pose: moving, capturedAt: stamp, now: stamp), .ahead)
+        }
+    }
+    func testWarningsHaveHysteresisWithoutInterveningStop() {
+        var guide = LiveProximityGuide()
+        for (i,distance) in [2.2,2.4,2.25,2.55].enumerated() {
+            let stamp = 1 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(distance), pose: pose, capturedAt: stamp, now: stamp), .caution)
+        }
+        XCTAssertEqual(guide.update(scene(2.8), pose: pose, capturedAt: 1.4, now: 1.4), .ahead)
+    }
+    func testClearedFrontRevokesOldTurnBeforeForwardAdvice() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2,3,nil))
+        XCTAssertEqual(guide.update(scene(3), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
+        XCTAssertEqual(guide.update(scene(3), pose: pose, capturedAt: 1.7, now: 1.7), .ahead)
+    }
+    func testTiltOrMissingPoseDoesNotProduceTurn() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: nil, capturedAt: 1, now: 1), .stop(.camera))
+    }
+    func testLevelRaysAreNormalizedAndCoverCorrectSides() {
+        for sector in Sector.allCases {
+            for row in 0..<12 { for column in 0..<10 {
+                let ray = LiveRayGeometry.ray(sector, column: column, row: row)!
+                XCTAssertEqual(ray.x*ray.x + ray.y*ray.y + ray.z*ray.z, 1, accuracy: 0.000001)
+                XCTAssertGreaterThan(ray.z, 0)
+                if sector == .left { XCTAssertLessThan(ray.x, 0) }
+                if sector == .right { XCTAssertGreaterThan(ray.x, 0) }
+                XCTAssertLessThan(abs(ray.y), sin(12 * .pi/180))
+            }}
+        }
+        XCTAssertNil(LiveRayGeometry.ray(.ahead, column: -1, row: 0))
+        XCTAssertNil(LiveRayGeometry.ray(.ahead, column: 0, row: 12))
+    }
+    func testCloseStopInterruptsObsoleteTurnImmediately() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 1, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.stop(.close).cue(), now: 1.01, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(LiveAction.stop(.close).cue(), now: 1.1, speaking: true))
+    }
+    func testProjectionRoundTripUsesActualIntrinsics() {
+        let point = DepthProjection.cameraPoint(imageX: 1100, imageY: 600, depth: 2.2, fx: 1400, fy: 1400, cx: 960, cy: 720)!
+        let projected = LiveRayGeometry.imagePoint(cameraRay: point, fx: 1400, fy: 1400, cx: 960, cy: 720, width: 1920, height: 1440)!
+        XCTAssertEqual(projected.x, 1100.0/1920, accuracy: 0.000001)
+        XCTAssertEqual(projected.y, 600.0/1440, accuracy: 0.000001)
+        XCTAssertNil(LiveRayGeometry.imagePoint(cameraRay: SIMD3(0,0,1), fx: 1400, fy: 1400, cx: 960, cy: 720, width: 1920, height: 1440))
+        XCTAssertNil(LiveRayGeometry.imagePoint(cameraRay: SIMD3(0,0,-1), fx: .nan, fy: 1400, cx: 960, cy: 720, width: 1920, height: 1440))
+    }
+    func testAllLevelRaysFitSyntheticPortraitCameraWithoutFloorScan() {
+        for sector in Sector.allCases { for row in 0..<12 { for column in 0..<10 {
+            let ray = LiveRayGeometry.ray(sector, column: column, row: row)!
+            // A portrait camera's raw image axes are rotated relative to the
+            // world. This is a fixture, not measured iPhone intrinsics/accuracy.
+            let cameraRay = SIMD3(-ray.y, ray.x, -ray.z)
+            XCTAssertNotNil(LiveRayGeometry.imagePoint(cameraRay: cameraRay,
+                fx: 1400, fy: 1400, cx: 960, cy: 720, width: 1920, height: 1440))
+        }}}
+    }
+    func testManualDistancesMatchCloseWarningNotDominantFarWall() {
+        var grid = cells(3); grid[55] = DepthCell(meters: 0.4, confidence: 2)
+        let cue = LiveProximityGuide.distanceReadout([.ahead: LiveRegion(cells: grid)])
+        XCTAssertTrue(cue.speech.contains("ahead, about 0.4 meters"))
+        XCTAssertTrue(cue.speech.contains("left, unknown"))
+        XCTAssertFalse(cue.speech.contains("safe"))
+    }
+    func testOrdinaryWarningDistanceChangesFinishSentence() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.caution.cue(meters: 2.2), now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(LiveAction.caution.cue(meters: 1.8), now: 1.1, speaking: true))
+        policy.didFinish(at: 3)
+        XCTAssertFalse(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.4, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.9, speaking: false))
+    }
+    func testNoRuntimeSpeechAsksForFloorOrDirectionalScan() {
+        let actions: [LiveAction] = [.starting,.ahead,.caution,.sideClose(.left),.turn(.left),.turn(.right),
+            .stop(.close),.stop(.obstacle),.stop(.uncertain),.stop(.rechecking),.stop(.camera)]
+        for action in actions {
+            let speech = action.cue().speech.lowercased()
+            XCTAssertFalse(speech.contains("scan"))
+            XCTAssertFalse(speech.contains("floor"))
+            XCTAssertFalse(speech.contains("safe"))
+        }
+    }
+    func testExhaustiveScenesNeverChooseUnknownOrCloserAlternative() {
+        let distances: [Double?] = [nil,0.4,0.8,1.3,1.8,2.2,3]
+        for ahead in distances { for left in distances { for right in distances {
+            let input = scene(ahead,left,right)
+            var guide = LiveProximityGuide()
+            let action = settle(&guide, input)
+            if case .turn(let side) = action {
+                XCTAssertNotEqual(side, .ahead)
+                XCTAssertNotNil(ahead)
+                XCTAssertLessThanOrEqual(ahead ?? .infinity, LiveProximityGuide.turnDistance)
+                XCTAssertTrue(input[side]!.supportsAlternative(to: ahead!))
+            }
+            if case .ahead = action { XCTAssertTrue(input[.ahead]!.supportsAhead) }
+            XCTAssertFalse(action.cue().speech.lowercased().contains("scan"))
+        }}}
+    }
+}
+
 final class DepthAnalysisTests: XCTestCase {
     private func grid(_ meters: Double = 2, confidence: UInt8 = 2, floor: Bool = false) -> [DepthCell] {
         Array(repeating: DepthCell(meters: meters, confidence: confidence, isKnownFloor: floor), count: 120)
@@ -658,459 +935,5 @@ final class DepthAnalysisTests: XCTestCase {
         var policy = DepthSpeechPolicy()
         XCTAssertTrue(policy.shouldSpeak(routineCue, now: 1, speaking: false, manual: true))
         XCTAssertTrue(policy.shouldSpeak(cue, now: 2.1, speaking: true))
-    }
-}
-
-final class ObstacleGuidanceTests: XCTestCase {
-    private var pose: InspectionPose { InspectionPose(position: .zero, forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))! }
-    private var observed: ObstacleCorridor { ObstacleCorridor(probes: Array(repeating: .observedBeyond, count: 75), floorSupported: true, nearestObstacle: nil) }
-    private var unknown: ObstacleCorridor { ObstacleCorridor(probes: Array(repeating: .unknown, count: 75), floorSupported: true, nearestObstacle: nil) }
-    private var blocked: ObstacleCorridor { ObstacleCorridor(probes: Array(repeating: .observedBeyond, count: 75), floorSupported: true, nearestObstacle: 0.8) }
-    private func settle(_ guide: inout ObstacleGuide, _ corridors: [Sector: ObstacleCorridor], start: Double = 1) -> ObstacleDecision {
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...8 {
-            let stamp = start + Double(i) * 0.1
-            result = guide.update(corridors, pose: pose, floorLevel: 0, capturedAt: stamp, now: stamp)
-        }
-        return result
-    }
-    func testForwardIsPreferredWithoutNeedingBothSidesMeasured() {
-        var guide = ObstacleGuide()
-        XCTAssertEqual(settle(&guide, [.ahead: observed, .left: unknown, .right: unknown]), .ahead)
-    }
-    func testObservedLeftCanBeSuggestedWithRightUnknownAfterStopping() {
-        var guide = ObstacleGuide()
-        let scene: [Sector: ObstacleCorridor] = [.ahead: blocked, .left: observed, .right: unknown]
-        XCTAssertEqual(guide.update(scene, pose: pose, floorLevel: 0, capturedAt: 1, now: 1), .stop(.obstacle))
-        XCTAssertEqual(settle(&guide, scene, start: 1.1), .turn(.left))
-    }
-    func testObservedRightCanBeSuggestedWithLeftUnknown() {
-        var guide = ObstacleGuide()
-        XCTAssertEqual(settle(&guide, [.ahead: blocked, .left: unknown, .right: observed]), .turn(.right))
-    }
-    func testUnknownAheadDoesNotProduceTurnTowardAnObservedSide() {
-        var guide = ObstacleGuide()
-        XCTAssertEqual(settle(&guide, [.ahead: unknown, .left: observed, .right: observed]), .stop(.unknown))
-    }
-    func testAllBlockedOrUnknownAlternativesStop() {
-        for alternative in [blocked, unknown] {
-            var guide = ObstacleGuide()
-            let result = settle(&guide, [.ahead: blocked, .left: alternative, .right: alternative])
-            if alternative.isBlocked { XCTAssertEqual(result, .stop(.noAlternative)) }
-            else { XCTAssertEqual(result, .scan(.left)) }
-        }
-    }
-    func testNewForwardObstacleWithdrawsForwardImmediately() {
-        var guide = ObstacleGuide()
-        XCTAssertEqual(settle(&guide, [.ahead: observed]), .ahead)
-        XCTAssertEqual(guide.update([.ahead: blocked], pose: pose, floorLevel: 0, capturedAt: 1.9, now: 1.9), .stop(.noAlternative))
-    }
-    func testFloorGapsCannotProduceForward() {
-        var guide = ObstacleGuide()
-        let gap = ObstacleCorridor(probes: observed.probes, floorSupported: false, nearestObstacle: nil)
-        XCTAssertEqual(settle(&guide, [.ahead: gap]), .stop(.floor))
-    }
-    func testAnyUnobservedBodyProbePreventsForward() {
-        for index in [0, 37, 74] {
-            var guide = ObstacleGuide()
-            var probes = observed.probes; probes[index] = .unknown
-            XCTAssertEqual(settle(&guide, [.ahead: ObstacleCorridor(probes: probes, floorSupported: true, nearestObstacle: nil)]), .stop(.unknown))
-        }
-    }
-    func testOccludedProbeVetoesCorridorEvenWithoutDenseObstacleHit() {
-        var probes = observed.probes; probes[12] = .occluded
-        let corridor = ObstacleCorridor(probes: probes, floorSupported: true, nearestObstacle: nil)
-        XCTAssertTrue(corridor.isBlocked)
-        XCTAssertFalse(corridor.isObserved)
-    }
-    func testMalformedProbeCountsAndNonfiniteObstacleCannotSuggestTurn() {
-        for corridor in [ObstacleCorridor(probes: [], floorSupported: true, nearestObstacle: nil),
-                         ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: .nan),
-                         ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: -1)] {
-            var guide = ObstacleGuide()
-            XCTAssertEqual(settle(&guide, [.ahead: corridor, .left: observed]), .stop(.unknown))
-        }
-    }
-    func testWalkingMotionPreventsPrematureTurnAdvice() {
-        var guide = ObstacleGuide()
-        for i in 0...20 {
-            let stamp = 1 + Double(i) * 0.1
-            let moving = InspectionPose(position: SIMD3(0, 0, -Double(i) * 0.08), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
-            let result = guide.update([.ahead: blocked, .left: observed], pose: moving, floorLevel: 0, capturedAt: stamp, now: stamp)
-            XCTAssertEqual(result, .stop(.obstacle))
-        }
-    }
-    func testStableForwardUpdatesDoNotRequireStandingStillForever() {
-        var guide = ObstacleGuide()
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...8 {
-            let stamp = 1 + Double(i) * 0.1
-            let moving = InspectionPose(position: SIMD3(0, 0, -Double(i) * 0.05), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
-            result = guide.update([.ahead: observed], pose: moving, floorLevel: 0, capturedAt: stamp, now: stamp)
-        }
-        XCTAssertEqual(result, .ahead)
-    }
-    func testTurningRequiresFreshHeadingAssessment() {
-        var guide = ObstacleGuide()
-        _ = settle(&guide, [.ahead: blocked, .left: observed])
-        let a = 15.0 * .pi / 180
-        let turned = InspectionPose(position: .zero, forward: SIMD3(-sin(a), 0, -cos(a)), up: SIMD3(0, 1, 0))!
-        XCTAssertEqual(guide.update([.ahead: observed], pose: turned, floorLevel: 0, capturedAt: 1.9, now: 1.9), .stop(.recheck))
-    }
-    func testStaleDuplicateFutureOrInvalidPoseNeverRetainsDirection() {
-        for (stamp, now) in [(1.8, 1.9), (1.7, 1.9), (3.0, 2.0), (2.0, 2.7), (Double.nan, 2.0)] {
-            var guide = ObstacleGuide()
-            _ = settle(&guide, [.ahead: observed])
-            XCTAssertEqual(guide.update([.ahead: observed], pose: pose, floorLevel: 0, capturedAt: stamp, now: now), .stop(.unknown))
-        }
-        var guide = ObstacleGuide()
-        XCTAssertEqual(guide.update([.ahead: observed], pose: nil, floorLevel: 0, capturedAt: 1, now: 1), .stop(.unknown))
-    }
-    func testFloorHeightJumpOrMissingFloorRequiresStop() {
-        var guide = ObstacleGuide()
-        _ = settle(&guide, [.ahead: observed])
-        XCTAssertEqual(guide.update([.ahead: observed], pose: pose, floorLevel: 0.2, capturedAt: 1.9, now: 1.9), .stop(.recheck))
-        XCTAssertEqual(guide.update([.ahead: observed], pose: pose, floorLevel: nil, capturedAt: 2, now: 2), .stop(.floor))
-    }
-    func testGeometryChecksBodyWidthAndHeightNotJustCentralRay() {
-        XCTAssertEqual(ObstacleGeometry.probes(.ahead).count, 75)
-        XCTAssertEqual(ObstacleGeometry.obstacleRange([SIMD3(0.45, 0.8, 1)], sector: .ahead), 1)
-        XCTAssertNil(ObstacleGeometry.obstacleRange([SIMD3(0.7, 0.8, 1)], sector: .ahead))
-        XCTAssertNil(ObstacleGeometry.obstacleRange([SIMD3(0, 0, 1), SIMD3(0, 2.4, 1)], sector: .ahead))
-        XCTAssertNotNil(ObstacleGeometry.obstacleRange([ObstacleGeometry.point(across: 0, height: 1, along: 1, sector: .left)], sector: .left))
-    }
-    func testDepthProbeNeedsConfidentNeighborSupportBeyondTarget() {
-        let good = ObstacleObservation(cameraDepth: 3, range: 3.2, confidence: 2)
-        let bad = ObstacleObservation(cameraDepth: .nan, range: .nan, confidence: 0)
-        XCTAssertEqual(ObstacleObservation.classify(targetCameraDepth: 2, neighborhood: Array(repeating: good, count: 5) + Array(repeating: bad, count: 4)), .observedBeyond)
-        XCTAssertEqual(ObstacleObservation.classify(targetCameraDepth: 2, neighborhood: Array(repeating: good, count: 4) + Array(repeating: bad, count: 5)), .unknown)
-        XCTAssertEqual(ObstacleObservation.classify(targetCameraDepth: .nan, neighborhood: Array(repeating: good, count: 9)), .unknown)
-    }
-    func testThinCloserSampleVetoesOtherwiseFarDepthNeighborhood() {
-        var observations = Array(repeating: ObstacleObservation(cameraDepth: 3, range: 3, confidence: 2), count: 9)
-        observations[4] = ObstacleObservation(cameraDepth: 0.6, range: 0.6, confidence: 2)
-        XCTAssertEqual(ObstacleObservation.classify(targetCameraDepth: 2, neighborhood: observations), .occluded)
-    }
-    func testSensorOutOfRangeAndLowConfidenceAreNotFreeSpace() {
-        for sample in [ObstacleObservation(cameraDepth: 6, range: 6, confidence: 2), ObstacleObservation(cameraDepth: 3, range: 3, confidence: 1)] {
-            XCTAssertEqual(ObstacleObservation.classify(targetCameraDepth: 2, neighborhood: Array(repeating: sample, count: 9)), .unknown)
-        }
-    }
-    func testStopCanInterruptForwardButTurnChangesFinishSentence() {
-        var speech = DepthSpeechPolicy()
-        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.ahead.cue, now: 1, speaking: false, manual: true))
-        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 2.1, speaking: true))
-        XCTAssertFalse(speech.shouldSpeak(ObstacleDecision.turn(.left).cue, now: 3, speaking: true))
-        XCTAssertFalse(speech.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 3.5, speaking: true))
-        speech.didFinish(at: 4)
-        XCTAssertFalse(speech.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 4.4, speaking: false))
-        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 4.9, speaking: false))
-    }
-    func testTurnPromptIsMovementHeadingAndAlwaysSaysStopFirst() {
-        XCTAssertEqual(ObstacleDecision.turn(.left).cue.speech, "Stop. Turn left about 30 degrees. Then recheck.")
-        XCTAssertFalse(ObstacleDecision.turn(.right).cue.speech.contains("phone"))
-        XCTAssertFalse(ObstacleDecision.ahead.cue.speech.contains("safe"))
-    }
-    func testNewStopImmediatelyRevokesAnActiveTurnWithoutRepeatingItself() {
-        var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.turn(.left).cue, now: 1, speaking: false))
-        let stop = ObstacleDecision.stop(.unknown).cue
-        XCTAssertTrue(policy.shouldSpeak(stop, now: 1.05, speaking: true))
-        XCTAssertFalse(policy.shouldSpeak(stop, now: 1.1, speaking: true))
-        XCTAssertFalse(policy.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.2, speaking: true))
-        XCTAssertFalse(policy.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 1.3, speaking: true))
-    }
-    func testStopRevokesForwardSpeechWithoutWaitingForRoutineCooldown() {
-        var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.ahead.cue, now: 1, speaking: false, manual: true))
-        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.01, speaking: true))
-    }
-    func testGradualHeadingChangeCannotRetainOldForwardRecommendation() {
-        var guide = ObstacleGuide()
-        _ = settle(&guide, [.ahead: observed])
-        var rechecked = false
-        for i in 1...6 {
-            let angle = Double(i * 2) * .pi / 180
-            let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle), 0, -cos(angle)), up: SIMD3(0, 1, 0))!
-            let stamp = 1.8 + Double(i) * 0.1
-            if guide.update([.ahead: observed], pose: rotated, floorLevel: 0, capturedAt: stamp, now: stamp) == .stop(.recheck) { rechecked = true }
-        }
-        XCTAssertTrue(rechecked)
-    }
-    func testTwoMeterWallWarnsRatherThanForcingStopOrTurn() {
-        for distance in [1.8, 2.0, 2.2, 2.4] {
-            var guide = ObstacleGuide()
-            let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: distance)
-            XCTAssertFalse(wall.isBlocked)
-            XCTAssertTrue(wall.isObserved)
-            XCTAssertEqual(settle(&guide, [.ahead: wall, .left: unknown, .right: unknown]), .caution)
-        }
-    }
-    func testFarWallCannotHideNearChairOrUnknownFloor() {
-        var guide = ObstacleGuide()
-        let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: 2.2)
-        XCTAssertEqual(settle(&guide, [.ahead: wall]), .caution)
-        XCTAssertEqual(guide.update([.ahead: blocked], pose: pose, floorLevel: 0, capturedAt: 1.9, now: 1.9), .stop(.noAlternative))
-        let noFloor = ObstacleCorridor(probes: observed.probes, floorSupported: false, nearestObstacle: 2.2)
-        XCTAssertEqual(settle(&guide, [.ahead: noFloor], start: 2), .stop(.floor))
-    }
-    func testEarlyWarningHysteresisAvoidsFlappingAndNeedlessStop() {
-        var guide = ObstacleGuide()
-        XCTAssertEqual(settle(&guide, [.ahead: observed]), .ahead)
-        for (i, distance) in [2.2, 2.5, 2.39, 2.65].enumerated() {
-            let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: distance)
-            let time = 1.9 + Double(i) * 0.1
-            XCTAssertEqual(guide.update([.ahead: wall], pose: pose, floorLevel: 0, capturedAt: time, now: time), .caution)
-        }
-        let far = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: 2.8)
-        XCTAssertEqual(guide.update([.ahead: far], pose: pose, floorLevel: 0, capturedAt: 2.4, now: 2.4), .ahead)
-    }
-    func testWiderMeasuredTurnCanAvoidBlockedSmallTurn() {
-        let paths = [ObstaclePath(degrees: 0, corridor: blocked), ObstaclePath(degrees: -30, corridor: blocked),
-                     ObstaclePath(degrees: -50, corridor: observed), ObstaclePath(degrees: 30, corridor: unknown)]
-        var guide = ObstacleGuide()
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...5 {
-            let time = 1 + Double(i) * 0.1
-            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
-        }
-        XCTAssertEqual(result, .turn(.left, degrees: 50))
-        XCTAssertTrue(result.cue.speech.contains("50 degrees"))
-    }
-    func testSmallestEligibleTurnPreferredOverUnnecessarySharpTurn() {
-        let paths = [ObstaclePath(degrees: 0, corridor: blocked), ObstaclePath(degrees: -70, corridor: observed),
-                     ObstaclePath(degrees: 30, corridor: observed)]
-        var guide = ObstacleGuide()
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...5 {
-            let time = 1 + Double(i) * 0.1
-            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
-        }
-        XCTAssertEqual(result, .turn(.right))
-    }
-    func testMalformedOrDuplicateHeadingsNeverProduceMovement() {
-        for paths in [[ObstaclePath(degrees: 90, corridor: observed), ObstaclePath(degrees: 0, corridor: blocked)],
-                      [ObstaclePath(degrees: 0, corridor: observed), ObstaclePath(degrees: 0, corridor: observed)]] {
-            var guide = ObstacleGuide()
-            XCTAssertEqual(guide.update(paths, pose: pose, floorLevel: 0, capturedAt: 1, now: 1), .stop(.unknown))
-        }
-    }
-    func testMissingSideFloorRequestsFloorScanNotEndlessGenericStop() {
-        var guide = ObstacleGuide()
-        let noFloor = ObstacleCorridor(probes: observed.probes, floorSupported: false, nearestObstacle: nil)
-        XCTAssertEqual(settle(&guide, [.ahead: blocked, .left: noFloor]), .stop(.floor))
-        XCTAssertTrue(ObstacleDecision.stop(.floor).cue.speech.contains("Tilt the phone down"))
-    }
-    func testRecoveryScanNeverBecomesWalkingInstruction() {
-        var guide = ObstacleGuide()
-        let result = settle(&guide, [.ahead: blocked, .left: unknown])
-        XCTAssertEqual(result, .scan(.left))
-        XCTAssertTrue(result.cue.speech.contains("Do not step"))
-        XCTAssertEqual(result.cue.speechPriority, 3)
-        XCTAssertFalse(result.cue.hasStabilizedDirection)
-    }
-    func testNewGeometryChecksNearSpaceRatherThanWholeRoom() {
-        for degrees in ObstacleGeometry.headings {
-            let angle = Double(degrees) * .pi / 180
-            let probes = ObstacleGeometry.probes(degrees: degrees)
-            XCTAssertEqual(probes.count, 75)
-            for probe in probes {
-                let along = probe.x * sin(angle) + probe.z * cos(angle)
-                XCTAssertGreaterThanOrEqual(along, 1.199)
-                XCTAssertLessThanOrEqual(along, 1.501)
-            }
-        }
-        XCTAssertEqual(ObstacleGeometry.obstacleRange([SIMD3(0, 1, 2.2)], sector: .ahead), 2.2)
-    }
-    func testNewCloseObstacleCancelsEarlyWarningImmediately() {
-        var speech = DepthSpeechPolicy()
-        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.caution.cue, now: 1, speaking: false))
-        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.01, speaking: true))
-    }
-    func testNarratedDistanceDoesNotRestartForDecimalNoise() {
-        let first = ObstacleDecision.caution.cue(aheadMeters: 2.2)
-        let second = ObstacleDecision.caution.cue(aheadMeters: 2.05)
-        XCTAssertTrue(first.speech.contains("2.0 meters"))
-        XCTAssertEqual(first.key, second.key)
-        var policy = DepthSpeechPolicy()
-        XCTAssertTrue(policy.shouldSpeak(first, now: 1, speaking: false))
-        XCTAssertFalse(policy.shouldSpeak(second, now: 1.2, speaking: true))
-        XCTAssertEqual(ObstacleDecision.caution.cue(aheadMeters: .nan), ObstacleDecision.caution.cue)
-    }
-}
-
-final class ObstacleDepthMemoryTests: XCTestCase {
-    private func snapshot(time: Double, depth: Float = 3, yaw: Double = 0, position: SIMD3<Double> = SIMD3(0, 1, 0)) -> ObstacleDepthSnapshot {
-        let angle = yaw * .pi / 180
-        return ObstacleDepthSnapshot(timestamp: time, position: position,
-            right: SIMD3(cos(angle), 0, -sin(angle)), up: SIMD3(0, 1, 0), back: SIMD3(sin(angle), 0, cos(angle)),
-            fx: 0.8, fy: 0.8, cx: 0.5, cy: 0.5, width: 31, height: 31,
-            depths: Array(repeating: depth, count: 31 * 31))!
-    }
-    func testWorldProjectionSeparatesOutsideViewFromUncertainDepth() {
-        let frame = snapshot(time: 1)
-        XCTAssertEqual(frame.probe(SIMD3(0, 1, -1)), .observedBeyond)
-        XCTAssertEqual(frame.probe(SIMD3(0, 1, -3)), .occluded)
-        XCTAssertNil(frame.probe(SIMD3(-2, 1, -1)))
-        XCTAssertNil(frame.probe(SIMD3(0, 1, 1)))
-        XCTAssertEqual(snapshot(time: 1, depth: .nan).probe(SIMD3(0, 1, -1)), .unknown)
-    }
-    func testSideScanUsesWorldCoordinatesNotOldScreenColumns() {
-        var memory = ObstacleDepthMemory()
-        let leftTarget = SIMD3<Double>(-1.2, 1, -1)
-        memory.insert(snapshot(time: 1, yaw: 45))
-        memory.insert(snapshot(time: 1.1))
-        XCTAssertNil(snapshot(time: 1.1).probe(leftTarget))
-        XCTAssertEqual(memory.probe(leftTarget, now: 1.1, turning: true), .observedBeyond)
-        XCTAssertEqual(memory.probe(SIMD3(1.2, 1, -1), now: 1.1, turning: true), .unknown)
-    }
-    func testNewLowConfidenceInViewCannotBorrowOldClearDepth() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1))
-        memory.insert(snapshot(time: 1.1, depth: .nan))
-        XCTAssertEqual(memory.probe(SIMD3(0, 1, -1), now: 1.1, turning: false), .unknown)
-    }
-    func testNewCloserSurfaceImmediatelyVetoesOldClearDepth() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1))
-        memory.insert(snapshot(time: 1.1, depth: 0.6))
-        XCTAssertEqual(memory.probe(SIMD3(0, 1, -1), now: 1.1, turning: false), .occluded)
-    }
-    func testMapExpiresAndCurrentFrameMustStillBeFresh() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1, yaw: 45))
-        memory.insert(snapshot(time: 1.4))
-        let target = SIMD3<Double>(-1.2, 1, -1)
-        XCTAssertEqual(memory.probe(target, now: 1.4, turning: true), .observedBeyond)
-        XCTAssertEqual(memory.probe(target, now: 2, turning: true), .unknown)
-        XCTAssertTrue(memory.hits(now: 2, turning: true).isEmpty)
-        XCTAssertEqual(memory.probe(target, now: 1.3, turning: true), .unknown)
-    }
-    func testForwardMemoryHasShorterAgeThanTurnScanMemory() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1, yaw: 45))
-        memory.insert(snapshot(time: 1.4))
-        memory.insert(snapshot(time: 1.7))
-        memory.insert(snapshot(time: 2.1))
-        let target = SIMD3<Double>(-1.2, 1, -1)
-        XCTAssertEqual(memory.probe(target, now: 2.1, turning: true), .observedBeyond)
-        XCTAssertEqual(memory.probe(target, now: 2.1, turning: false), .unknown)
-    }
-    func testCameraTranslationClearsStationaryScanMemory() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1, yaw: 45))
-        memory.insert(snapshot(time: 1.1, position: SIMD3(0.2, 1, 0)))
-        XCTAssertEqual(memory.count, 1)
-        XCTAssertEqual(memory.probe(SIMD3(-1.2, 1, -1), now: 1.1, turning: true), .unknown)
-    }
-    func testGradualTranslationIsComparedWithScanOriginNotLastFrame() {
-        var memory = ObstacleDepthMemory()
-        for i in 0...4 { memory.insert(snapshot(time: 1 + Double(i) * 0.1, position: SIMD3(Double(i) * 0.04, 1, 0))) }
-        XCTAssertEqual(memory.count, 1)
-    }
-    func testFrameStorageBoundAndBadTimestampReset() {
-        var memory = ObstacleDepthMemory()
-        for i in 0...30 { memory.insert(snapshot(time: 1 + Double(i) * 0.05)) }
-        XCTAssertEqual(memory.count, ObstacleDepthMemory.maximumFrames)
-        memory.insert(snapshot(time: 1))
-        XCTAssertEqual(memory.count, 0)
-    }
-    func testLongGapCannotUsePreviousScan() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(snapshot(time: 1, yaw: 45))
-        memory.insert(snapshot(time: 2))
-        XCTAssertEqual(memory.count, 1)
-    }
-    func testInvalidSnapshotDimensionsOrCameraBasisAreRejected() {
-        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(2, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
-            fx: 1, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: Array(repeating: 3, count: 9)))
-        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
-            fx: .nan, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: Array(repeating: 3, count: 9)))
-        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
-            fx: 1, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: []))
-    }
-    func testOutOfRangeDepthNeverBuildsFreeSpace() {
-        XCTAssertTrue(snapshot(time: 1, depth: 8).hits.isEmpty)
-        XCTAssertEqual(snapshot(time: 1, depth: 8).probe(SIMD3(0, 1, -1)), .unknown)
-    }
-    // Analytic room fixture exercises the projection and near-space geometry
-    // together, not just a hand-filled array of "observed" flags. This is a
-    // synthetic camera, not a measured iPhone accuracy/FOV claim.
-    private func room(time: Double, yaw: Double = 0, pitch: Double = 0, wall: Double = 2.2, post: Double? = nil) -> ObstacleDepthSnapshot {
-        let yaw = yaw * .pi / 180, pitch = pitch * .pi / 180
-        let right = SIMD3(cos(yaw), 0, -sin(yaw))
-        let up = SIMD3(sin(yaw)*sin(pitch), cos(pitch), cos(yaw)*sin(pitch))
-        let back = SIMD3(sin(yaw)*cos(pitch), -sin(pitch), cos(yaw)*cos(pitch))
-        var depths: [Float] = []
-        for py in 0..<96 {
-            for px in 0..<96 {
-                let x = (Double(px) + 0.5) / 96 - 0.5
-                let y = (0.5 - (Double(py) + 0.5) / 96) / 0.65
-                let ray = right * x + up * y - back
-                var intersections: [Double] = []
-                if ray.z < -0.0001 { intersections.append(-wall / ray.z) }
-                if ray.x < -0.0001 { intersections.append(-3 / ray.x) }
-                if ray.x > 0.0001 { intersections.append(3 / ray.x) }
-                if ray.y < -0.0001 { intersections.append(-1 / ray.y) }
-                if ray.y > 0.0001 { intersections.append(1.5 / ray.y) }
-                if let post, ray.z < -0.0001 {
-                    let t = -post / ray.z
-                    let y = 1 + ray.y * t
-                    if abs(ray.x * t) <= 0.15 && y >= 0 && y <= 2.05 { intersections.append(t) }
-                }
-                depths.append(Float(intersections.min() ?? .nan))
-            }
-        }
-        return ObstacleDepthSnapshot(timestamp: time, position: SIMD3(0, 1, 0), right: right, up: up, back: back,
-            fx: 1, fy: 0.65, cx: 0.5, cy: 0.5, width: 96, height: 96, depths: depths)!
-    }
-    func testTwoMeterRoomProducesWarningWithoutRequiringAScan() {
-        var memory = ObstacleDepthMemory()
-        var guide = ObstacleGuide()
-        let pose = InspectionPose(position: SIMD3(0, 1, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...3 {
-            let time = 1.45 + Double(i) * 0.1
-            memory.insert(room(time: time))
-            let probes = ObstacleGeometry.probes(.ahead).map { memory.probe(SIMD3($0.x, $0.y, -$0.z), now: time, turning: false) }
-            let points = memory.hits(now: time, turning: false).map { SIMD3($0.x, $0.y, -$0.z) }
-            let corridor = ObstacleCorridor(probes: probes, floorSupported: true,
-                                          nearestObstacle: ObstacleGeometry.obstacleRange(points, sector: .ahead))
-            XCTAssertFalse(corridor.isBlocked)
-            XCTAssertEqual(probes.filter { $0 == .observedBeyond }.count, 75, "Synthetic view must actually cover body probes")
-            result = guide.update([.ahead: corridor], pose: pose, floorLevel: 0, capturedAt: time, now: time)
-        }
-        XCTAssertEqual(result, .caution)
-        memory.insert(room(time: 1.85, wall: 0.7))
-        let probes = ObstacleGeometry.probes(.ahead).map { memory.probe(SIMD3($0.x, $0.y, -$0.z), now: 1.85, turning: false) }
-        let points = memory.hits(now: 1.85, turning: false).map { SIMD3($0.x, $0.y, -$0.z) }
-        let close = ObstacleCorridor(probes: probes, floorSupported: true,
-                                    nearestObstacle: ObstacleGeometry.obstacleRange(points, sector: .ahead))
-        XCTAssertEqual(guide.update([.ahead: close], pose: pose, floorLevel: 0, capturedAt: 1.85, now: 1.85), .stop(.noAlternative))
-    }
-    func testProjectedRoomFindsWiderTurnAroundCloseCentralObstacle() {
-        var memory = ObstacleDepthMemory()
-        memory.insert(room(time: 1, yaw: 50, wall: 3, post: 0.9))
-        var guide = ObstacleGuide()
-        let pose = InspectionPose(position: SIMD3(0, 1, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
-        let floor = [SIMD2<Double>(-3, -3), SIMD2(3, -3), SIMD2(3, 3), SIMD2(-3, 3)]
-        var result = ObstacleDecision.stop(.unknown)
-        for i in 0...5 {
-            let time = 1.1 + Double(i) * 0.1
-            memory.insert(room(time: time, wall: 3, post: 0.9))
-            let points = memory.hits(now: time, turning: true).map { SIMD3($0.x, $0.y, -$0.z) }
-            let paths = ObstacleGeometry.headings.map { degrees in
-                let probes = ObstacleGeometry.probes(degrees: degrees).map {
-                    memory.probe(SIMD3($0.x, $0.y, -$0.z), now: time, turning: degrees != 0)
-                }
-                let supported = ObstacleGeometry.groundChecks(degrees: degrees).allSatisfy {
-                    FloorBoundary.contains(SIMD2($0.x, -$0.z), vertices: floor)
-                }
-                return ObstaclePath(degrees: degrees, corridor: ObstacleCorridor(probes: probes, floorSupported: supported,
-                    nearestObstacle: ObstacleGeometry.obstacleRange(points, degrees: degrees)))
-            }
-            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
-        }
-        XCTAssertEqual(result, .turn(.left, degrees: 50))
     }
 }

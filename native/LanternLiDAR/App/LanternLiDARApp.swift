@@ -18,15 +18,9 @@ private struct LidarScreen: View {
                     Spacer()
                     Text("LiDAR prototype").font(.caption).foregroundStyle(.secondary)
                 }
-                Toggle("Obstacle guidance · supervised demo", isOn: $sensor.obstacleGuidanceEnabled).tint(.black)
-                if sensor.obstacleGuidanceEnabled {
-                    Text("Experimental. Test stationary with a sighted helper; keep using your mobility aid. Hold the phone upright near waist level, aligned with your body.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if sensor.running {
-                    if sensor.obstacleGuidanceEnabled { obstacleCard }
-                    else { adviceCard }
-                }
+                Text("Aim forward. Live alerts compare visible surfaces—not verified walking routes.")
+                    .font(.subheadline)
+                if sensor.running { liveCard }
                 controls
                 Text(sensor.status).font(.caption).foregroundStyle(.secondary)
                 distanceCards
@@ -36,42 +30,37 @@ private struct LidarScreen: View {
                         Color.black
                         VStack(spacing: 12) {
                             Image(systemName: "viewfinder").font(.largeTitle)
-                            Text(sensor.supported ? "Real depth. No chair calibration." : "LiDAR hardware required")
+                            Text(sensor.supported ? "Live obstacle alerts" : "LiDAR hardware required")
                             Text(sensor.supported ? "Start to use the rear camera and LiDAR." : "Use a supported physical iPhone Pro or iPad Pro. The simulator has no sensor.")
                                 .font(.caption).multilineTextAlignment(.center)
                         }.foregroundStyle(.white).padding()
-                    } else {
-                        GeometryReader { geometry in
-                            ForEach(Sector.allCases, id: \.self) { sector in
-                                Rectangle().stroke(.white.opacity(0.65), lineWidth: 1)
-                                    .overlay(alignment: .top) { Text(sector.rawValue.uppercased()).font(.caption.bold()).padding(6).background(.black.opacity(0.6)).foregroundStyle(.white) }
-                                    .frame(width: geometry.size.width * (sector.horizontalBounds.upperBound - sector.horizontalBounds.lowerBound), height: geometry.size.height * 0.5)
-                                    .position(x: geometry.size.width * (sector.horizontalBounds.lowerBound + sector.horizontalBounds.upperBound) / 2, y: geometry.size.height * 0.55)
-                            }
-                        }.allowsHitTesting(false)
                     }
-                }.aspectRatio(0.85, contentMode: .fit).clipped().accessibilityLabel("Rear-camera preview with left, ahead and right sampling regions")
-                Toggle("Short voice alerts", isOn: $sensor.voiceEnabled).tint(.black)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Voice speed").font(.subheadline)
-                    Slider(value: $sensor.voiceSpeed, in: 0.35...0.6, step: 0.01) {
-                        Text("Voice speed")
-                    } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
-                        .tint(.black)
-                    Text("Ordinary updates finish sentences. A walking-mode STOP cancels an obsolete movement instruction immediately. VoiceOver voice and speed settings take precedence when enabled.")
-                        .font(.caption).foregroundStyle(.secondary)
+                }.aspectRatio(1.1, contentMode: .fit).clipped()
+                    .accessibilityLabel("Rear-camera preview. Only the measured sensing band is analyzed.")
+                Toggle("Voice alerts", isOn: $sensor.voiceEnabled).tint(.black)
+                DisclosureGroup("Audio settings") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Voice speed").font(.subheadline)
+                        Slider(value: $sensor.voiceSpeed, in: 0.35...0.6, step: 0.01) {
+                            Text("Voice speed")
+                        } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
+                            .tint(.black)
+                        Text("Normal sentences finish. A new STOP cancels an obsolete turn. Repeat does not restart a sentence. VoiceOver voice and speed settings take precedence.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.padding(.top, 8)
                 }
-                DisclosureGroup("How to read the distances") {
+                DisclosureGroup("What these alerts mean") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Left, Ahead, and Right match the three boxes in the camera view. Hold the phone upright and aim forward while stationary.")
-                        Text("Meters describe the nearest supported surface patch, not an identified object or a guaranteed free path. The sample percentage is depth coverage, not an accuracy score.")
-                        Text("Unknown is intentional when depth is uncertain, outside the 0.2–4.5 m software window, or only classified floor is sampled. Re-aim slowly at an opaque nearby wall or furniture; never assume Unknown means clear.")
-                        Text("A direction comparison needs all three distances, stronger sample coverage, an identified floor and a steady, upright view. Missing readings produce a phone-only SCAN prompt to help measure that region, not a walking choice. CHECK appears only after comparison and settling. Unknown never means open space.")
-                        Text("Obstacle guidance uses separate full-depth 3D space checks, not these three numbers. The boxes show distance-sample regions, not the edges of a walking corridor. STOP is the default when floor support or forward space is unobserved. Turn cues mean stop and turn in place, then wait for a fresh forward check—not sidestep while walking.")
+                        Text("The app measures three gravity-level bands: left, ahead and right. Floor classification can improve filtering automatically but is never a setup requirement.")
+                        Text("A farther surface gives a distance warning. At a closer surface the app can suggest a stop-and-turn toward a better-measured side. It checks new depth continuously; there is no scan checklist.")
+                        Text("A turn means stop and reorient in place, then recheck. It is not permission to step. The phone must face along your body; body heading is not measured independently.")
+                        Text("Missing or uncertain depth never becomes an open route. If neither side is reliably measured, STOP is the correct output.")
+                        Text("The prototype settings are 2.3 m for early warning, 1.4 m for avoidance, and 0.65 m for a close-surface STOP. They are unvalidated fixed heuristics, not safe stopping distances or settings adapted to your speed.")
                     }.font(.caption).padding(.top, 8)
                 }
-                Text("No API key, recording, upload, or distance calibration. Sensor data stays on this device.").font(.caption)
-                Text("Experimental assistance, not validated navigation or collision avoidance. Glass, dark/reflective surfaces, thin hazards, steps and drop-offs can be missed. Unknown is not clear. Keep using established mobility aids. Never use for road crossing.")
+                Text("Not validated for independent navigation. Low obstacles, overhead hazards, steps, drop-offs and glass can be missed. The arrow does not verify footing or full body clearance. Test with a sighted helper and keep using established mobility aids. Never use for road crossing.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("No API key, recording, uploads or distance calibration. Processing stays on this device.")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(20)
         }.background(.white).foregroundStyle(.black).preferredColorScheme(.light)
@@ -81,73 +70,51 @@ private struct LidarScreen: View {
             }
             .onDisappear { sensor.stop() }
     }
-    private var obstacleCard: some View {
+
+    private var liveCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("OBSTACLE GUIDANCE · EXPERIMENTAL").font(.caption.bold())
+            Text("LIVE OBSTACLE ALERTS").font(.caption.bold())
             HStack(spacing: 16) {
-                Image(systemName: obstacleSymbol).font(.system(size: 44, weight: .bold)).accessibilityHidden(true)
-                Text(sensor.obstacleDecision.title).font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: adviceSymbol).font(.system(size: 44, weight: .bold)).accessibilityHidden(true)
+                Text(sensor.liveAction.title).font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
             }
-            if let ahead = sensor.obstaclePaths.first(where: { $0.degrees == 0 })?.corridor.nearestObstacle {
-                Text(String(format: "Nearest sampled hit ahead · %.1f m", ahead)).font(.headline)
+            if let distance = sensor.regions[.ahead]?.nearestHit {
+                Text(String(format: "Nearest measured ahead · %.1f m", distance)).font(.title3.bold())
             }
-            Text(sensor.obstacleDecision.detail).font(.subheadline)
-            Text("Suggested heading, not a verified safe route.").font(.caption)
-            DisclosureGroup("Space-check details") {
+            Text(sensor.liveAction.detail).font(.subheadline)
+            Text("Limited sensing band—not a safe-route detector.").font(.caption.bold())
+            DisclosureGroup("Measurement details") {
                 VStack(alignment: .leading, spacing: 8) {
-                    if sensor.obstacleCorridors.isEmpty {
-                        Text("No usable level floor reference yet. With a sighted helper, briefly observe the floor, then hold the phone upright near waist/lower-chest level and point it forward.")
+                    ForEach(Sector.allCases, id: \.self) { sector in
+                        if let region = sensor.regions[sector] {
+                            Text("\(sector.rawValue.capitalized): \(region.reading.label); \(Int((region.reading.coverage * 100).rounded()))% high-confidence coverage.")
+                            if let nearest = region.nearestHit {
+                                Text(String(format: "Closest individual sample: %.1f m", nearest))
+                            }
+                        }
                     }
-                    Text("Near-space window: 1.5 m, plus a 0.15 m depth margin. Distant-obstacle warning starts at 2.4 m. These are unvalidated prototype settings, not safe stopping distances.")
-                    ForEach(sensor.obstaclePaths, id: \.degrees) { path in
-                        let corridor = path.corridor
-                        let observed = corridor.probes.filter { $0 == .observedBeyond }.count
-                        let blocked = corridor.probes.filter { $0 == .occluded }.count
-                        let label = path.degrees == 0 ? "Ahead" : "\(path.sector.rawValue.capitalized) \(abs(path.degrees))°"
-                        Text("\(label): \(observed)/75 near-space samples; \(blocked) occluded; floor \(corridor.floorSupported ? "covered" : "incomplete").")
+                    Text("Floor filtering: \(sensor.floorKnown ? "available automatically" : "not yet available; proximity alerts still run").")
+                    if let milliseconds = sensor.analysisMilliseconds {
+                        Text(String(format: "Last analysis pass: %.1f ms. Not end-to-end response time.", milliseconds))
                     }
-                    Text("These are sampled-space checks, not an accuracy percentage or a complete scan of every hazard.")
+                    Text("Coverage is sample availability, not accuracy. Side hints require broader coverage and reject any measured closer sample.")
                 }.font(.caption).padding(.top, 8)
             }.font(.caption).tint(.white)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
             .background(.black).foregroundStyle(.white).clipShape(RoundedRectangle(cornerRadius: 12))
-            .accessibilityElement(children: .contain).accessibilityIdentifier("obstacle-guidance")
+            .accessibilityElement(children: .contain).accessibilityIdentifier("live-proximity-guidance")
+        // Speech owns announcements; do not create a second live-region queue.
     }
-    private var obstacleSymbol: String {
-        switch sensor.obstacleDecision {
+
+    private var adviceSymbol: String {
+        switch sensor.liveAction {
         case .ahead: return "arrow.up"
-        case .caution: return "exclamationmark.triangle"
-        case .turn(.left, _): return "arrow.turn.up.left"
-        case .turn(.right, _): return "arrow.turn.up.right"
-        case .scan: return "viewfinder"
-        case .turn(.ahead, _), .stop: return "hand.raised"
+        case .caution, .sideClose: return "exclamationmark.triangle"
+        case .turn(.left): return "arrow.turn.up.left"
+        case .turn(.right): return "arrow.turn.up.right"
+        case .starting: return "viewfinder"
+        case .turn(.ahead), .stop: return "hand.raised"
         }
-    }
-    private var adviceCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(sensor.inspection.scanTarget == nil ? "PAUSE · DIRECTION TO INSPECT" : "PAUSE · PHONE SCAN ONLY").font(.caption.bold())
-            HStack(alignment: .center, spacing: 16) {
-                Image(systemName: inspectionSymbol).font(.system(size: 48, weight: .bold))
-                    .accessibilityHidden(true)
-                Text(adviceHeadline)
-                    .font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
-            }
-            if sensor.cue.speechPriority == 2 {
-                Text("Surface close ahead · \(sensor.readings[.ahead]?.label ?? "Unknown")").font(.subheadline.bold())
-            } else if sensor.cue.key.hasPrefix("side:") {
-                Text(sensor.cue.title).font(.subheadline.bold())
-            }
-            Text(sensor.inspection.target == nil ? sensor.inspection.detail : "Check with the phone, not a step instruction. Readings support an inspection, not a verified walking route.")
-                .font(.subheadline)
-            DisclosureGroup("Why this advice?") {
-                Text(sensor.inspection.detail).font(.caption).padding(.top, 4)
-            }.font(.caption)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            .background(.black).foregroundStyle(.white).tint(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("inspection-guidance")
-        // Not a live region: app speech handles changes without duplicate alerts.
     }
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
@@ -159,41 +126,31 @@ private struct LidarScreen: View {
         Button {
             if sensor.running { sensor.stop() } else { sensor.start() }
         } label: {
-            Text(sensor.running ? "Stop" : "Start LiDAR").foregroundStyle(.white)
+            Text(sensor.running ? "Stop camera" : "Start").foregroundStyle(.white)
         }.buttonStyle(.borderedProminent).tint(.black).disabled(!sensor.supported || sensor.requestingPermission)
         Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
-            .accessibilityHint("Repeats current guidance when the voice is idle. Does not restart a sentence already playing.")
+            .accessibilityHint("Repeats current advice when speech is idle.")
         Button("Distances") { sensor.readDistances() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
-            .accessibilityHint("Reads the current left, ahead and right surface distances when the voice is idle.")
+            .accessibilityHint("Reads current left, ahead and right distances.")
     }
     private var distanceCards: some View {
         HStack(alignment: .top, spacing: 8) {
             ForEach(Sector.allCases, id: \.self) { sector in
                 VStack(spacing: 8) {
                     Text(sector.rawValue.capitalized).font(.caption)
-                    Text(sensor.running ? (sensor.readings[sector]?.label ?? "Unknown") : "—").font(.headline).minimumScaleFactor(0.7)
-                    Text(sensor.running ? (sensor.readings[sector]?.explanation ?? "Waiting for fresh depth") : "Camera off")
-                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                }.frame(maxWidth: .infinity, alignment: .top).padding(8).frame(maxHeight: .infinity, alignment: .top)
-                    .overlay(Rectangle().stroke(sensor.inspection.scanTarget == sector ? .black : .gray.opacity(0.3), lineWidth: sensor.inspection.scanTarget == sector ? 2 : 1))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("distance-\(sector.rawValue)")
+                    Text(distanceLabel(sector))
+                        .font(.headline).minimumScaleFactor(0.7)
+                    Text("Closest sample").font(.caption2).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .top).padding(10).frame(maxHeight: .infinity, alignment: .top)
+                    .overlay(Rectangle().stroke(.gray.opacity(0.3), lineWidth: 1))
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("distance-\(sector.rawValue)")
             }
-        }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
+        }.fixedSize(horizontal: false, vertical: true)
     }
-    private var inspectionSymbol: String {
-        if sensor.inspection.scanTarget != nil { return "viewfinder" }
-        switch sensor.inspection.target {
-        case .left: return "arrow.left"
-        case .ahead: return "arrow.up"
-        case .right: return "arrow.right"
-        case nil: return "hand.raised"
-        }
-    }
-    private var adviceHeadline: String {
-        if let sector = sensor.inspection.target { return "CHECK \(sector.rawValue.uppercased())" }
-        if let sector = sensor.inspection.scanTarget { return "SCAN \(sector.rawValue.uppercased())" }
-        return sensor.inspection.title
+    private func distanceLabel(_ sector: Sector) -> String {
+        guard sensor.running else { return "—" }
+        guard let meters = sensor.regions[sector]?.nearestHit else { return "Unknown" }
+        return String(format: "~%.1f m", meters)
     }
 }
 
@@ -201,7 +158,6 @@ private final class PreviewView: ARSCNView {
     var onLayout: ((CGSize) -> Void)?
     override func layoutSubviews() { super.layoutSubviews(); onLayout?(bounds.size) }
 }
-
 private struct SensorPreview: UIViewRepresentable {
     let sensor: LidarController
     func makeUIView(context: Context) -> ARSCNView {

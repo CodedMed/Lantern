@@ -1,353 +1,200 @@
 # Lantern LiDAR — native iPhone prototype
 
-Real ARKit LiDAR scene depth, without a measured-chair reference or API key.
-Intended hardware: **iPhone 15 Pro Max** (or another device passing the runtime
-LiDAR capability check), iOS 17+. **Not a validated navigation/mobility aid.**
+Automatic **visible-surface proximity alerts** using real ARKit LiDAR. This is
+not validated navigation, full-body clearance checking, or a replacement for a
+cane, guide dog or trained assistance. Intended hardware: iPhone 15 Pro Max or
+another device passing the runtime LiDAR check; iOS 17+.
 
-This is a separate Apple-framework-only SwiftUI app. It is **not** Safari/PWA
-functionality, Expo Go, an App Store/TestFlight release, or an update to the
-Render website. The existing web app and legacy Expo app are preserved.
+This is a separate SwiftUI app. It is not Safari/PWA LiDAR functionality, an
+App Store/TestFlight release, or an update to the Render website. The website
+and legacy Expo app are preserved.
 
 ## Run on your iPhone
 
-1. Install **full Xcode** from Apple's Mac App Store and complete Apple's setup
-   yourself. Command Line Tools do not contain the iOS SDK or necessarily XCTest.
-2. Open `native/LanternLiDAR/LanternLiDAR.xcodeproj` in Xcode.
-3. Connect/unlock your iPhone by USB-C. Complete its Trust prompt yourself.
-4. Select the **LanternLiDAR** scheme and your physical phone. Under the app
-   target's **Signing & Capabilities**, choose your own **Personal Team** and
-   automatic signing. If necessary, change the bundle ID to a unique value.
-   No signing identity or credentials are committed. Personal Team installation
-   is development testing on your device, not public/permanent distribution.
-5. Follow Xcode's instructions to enable **Developer Mode** on your phone. Handle
-   the security setting and any required restart yourself.
-6. Press Run, allow camera access, then tap **Start LiDAR**. Aim at an opaque
-   nearby surface while stationary. No distance entry is needed. Stop/background
-   clears readings and releases the session. Restart is explicit.
+1. Install full Xcode and finish Apple's initial setup. Command Line Tools alone
+   do not provide the iOS SDK.
+2. Open `native/LanternLiDAR/LanternLiDAR.xcodeproj` and select the
+   LanternLiDAR scheme.
+3. Connect and unlock a supported phone by USB-C; complete Trust yourself.
+4. In Signing & Capabilities, choose your Personal Team and automatic signing.
+   Use your own unique bundle ID if needed. No signing credentials are committed.
+   Personal Team signing is development testing, not public distribution.
+5. Enable Developer Mode on the phone following Xcode's instructions. Handle
+   security settings, passwords, trust prompts and any restart yourself.
+6. Press Run, allow camera access, then tap **Start**. Hold the phone upright,
+   pointing along the body's forward direction. Stop camera/background releases
+   the session and clears readings; restarting is explicit.
 
-## Distance pipeline
+There is **one live flow**. No obstacle-demo toggle, floor scan, room scan,
+calibration step, or left/right scan checklist. Floor classification can improve
+filtering automatically but is never required to obtain a proximity reading.
 
-- Runtime checks for ARKit scene depth **and** a real rear LiDAR capture device.
-  Unsupported phones/simulators get an explanation, not fake depth.
-- Reads `ARFrame.sceneDepth.depthMap` with that frame's own `confidenceMap`.
-  Validates buffer formats, dimensions, locks, and independent byte-row strides.
-- Applies inverse ARKit display transformation for portrait rotation and camera
-  aspect-fill cropping. Unprojects the sampled depth pixel's center using the
-  frame's actual camera intrinsics; computes its Euclidean/slant range.
-- Samples three screen regions, 10 × 12 cells each (360 total), at most 10 times
-  per second. That is a scheduling cap, **not measured phone FPS**.
-- Accepts only high-confidence, finite readings within a prototype software
-  window of 0.2–4.5 m. Invalid/out-of-window/missing data stays Unknown.
-- Requires at least 35% valid coverage and a connected patch of six samples.
-  Uses the nearest supported patch's 20th percentile, not a single noisy minimum
-  pixel. This can still miss thin/small obstacles and is not exact minimum range.
-- Uses a three-reading median, bypassing old history for a substantially closer
-  new surface. Readings expire after 0.5 seconds; uncertain/missing frames remove
-  distances immediately. Frames predating the latest Start are rejected.
-- Excludes points near **classified floor boundary polygons**, not a bounding box, a guessed
-  floor height or every horizontal table. Before floor classification, ground
-  may be included in readings; side-selection suggestions are withheld.
-- Gives short, action-first **pause/check** cues, never a verified safe walking
-  route. Ordinary distance, direction, and uncertainty changes finish the current
-  sentence. Only an escalation to a close-ahead warning can interrupt lower-priority
-  speech, bounded to avoid repeated interruptions during level oscillation.
-- Keeps only current-frame speech context, not an utterance backlog. Requires a
-  brief stable cue (0.45 s unconfirmed ordinary / 0.8 s unknown), uses an actual synthesis
-  completion callback and a 0.8 s gap, and can remind persistent context after
-  12 seconds. Close-ahead escalations do not wait for stability. These are UX
-  heuristics, not validated safety response times. Visual meters still clear
-  immediately even if a spoken snapshot finishes.
-- Repeat does not restart an active sentence. A voice-speed control is available;
-  VoiceOver voice/speed preferences take precedence through Apple's assistive
-  technology setting. iOS manages the speech audio session. No paid voice API.
+## What it says
 
-Each region explains missing meters: insufficient confident depth, outside the
-software range window, only classified floor sampled, or no supported surface
-patch. Unknown still clears the old number immediately; no lowered confidence
-threshold, invented distance, or stale-number grace period is used. The displayed
-sample percentage describes in-range, high-confidence grid coverage, **not sensor
-accuracy**. The in-app help explains positioning and these limits.
+| Situation | Display / short speech |
+| --- | --- |
+| Forward band has usable depth and no close measured surface | FORWARD VIEW / “No close surface measured ahead.” |
+| Farther obstacle ahead | OBSTACLE AHEAD / approximate distance and “Slow down.” |
+| Close obstacle plus a reliably farther measured side | STOP · TURN LEFT/RIGHT / “Stop. Turn left/right and recheck.” |
+| Very close sampled surface anywhere in the three bands | STOP / “Surface very close.” |
+| Side surface is close but the forward band is farther | CLOSE ON LEFT/RIGHT / “Keep clear.” |
+| Neither side is reliably measured around a close obstacle | STOP / “Obstacle ahead.” |
+| Fresh depth is insufficient or the phone is pointed away | DEPTH UNCERTAIN / pause, or POINT CAMERA FORWARD |
 
-Leaving and returning reads new depth. There is no chair identity, stored chair
-size, runtime distance calibration, or manual same-chair confirmation.
+The arrow compares **visible surfaces**, not a certified route. A turn means
+stop and reorient **in place**, then check again before a step. Body orientation
+is not independently measured; the phone must remain aligned with the body.
+There is no instruction to sidestep or back into unseen space.
 
-## Obstacle guidance — supervised experimental mode
+Prototype fixed thresholds: 2.3 m early warning (exit at 2.6 m), 1.4 m avoidance
+hint, 0.65 m close-surface STOP. These are **unvalidated engineering heuristics**,
+not safe stopping distances or settings adapted to walking speed. Do not defer
+stopping until a threshold if a helper, mobility aid or your assessment indicates
+danger. A 2.2 m wall alone should warn rather than initiate a turn.
 
-The primary mode now addresses **walking-heading feedback**, rather than asking
-the user only to aim the camera. It is enabled by the clearly labeled supervised
-demo toggle. This is local obstacle awareness, **not validated navigation or a
-replacement for a cane, guide dog or trained assistance**. Keep the phone pointing
-along the body's heading; the app cannot independently measure body orientation.
-Test while stationary with a sighted helper, not by walking into obstacles.
-The toggle defaults **off**: opt into "Obstacle guidance · supervised demo" before
-starting this mode. Turning it off preserves the earlier phone-only SCAN/CHECK
-mode. "Space-check details" shows observed/occluded probe counts and floor support
-for each candidate, so a STOP can be diagnosed without treating the three meter
-cards as route-clearance evidence.
+## Measurement pipeline
 
-The output is:
+1. Check ARKit scene-depth support and a real rear LiDAR capture device. The
+   simulator/unsupported phones show an explanation, not fake depth.
+2. Read the same frame's raw scene depth and confidence buffers. Validate formats,
+   dimensions, independent byte-row strides and buffer locks.
+3. Build **360 gravity-level rays**: 10 columns × 12 rows in each of three bands.
+   Horizontal angles are left −24…−8°, ahead −10…10°, right 8…24°; vertical angles
+   are ±12°. Use the frame's real camera transform and intrinsics to project the
+   rays into the raw sensor image, independent of portrait rotation/preview crop.
+   Out-of-view or invalid rays remain Unknown.
+4. Unproject each sampled pixel centre using its camera-Z depth and intrinsics;
+   report Euclidean/slant distance. Accept only finite, high-confidence (2)
+   samples inside the 0.2–4.5 m software window. A confidence value is not an
+   accuracy guarantee.
+5. Automatically exclude samples lying within classified floor boundary polygons,
+   if available. No guessed floor height or “everything horizontal is floor”
+   rule. The **level sensing band** avoids looking broadly at the floor, but this
+   also means low and overhead hazards may be missed.
+6. Keep both the closest individual non-floor hit and the nearest connected
+   surface patch (at least six neighboring samples, patch 20th percentile).
+   A thin closer hit can override a dominant far wall. The big distance cards,
+   warning distance and on-demand Distances speech all use closest samples;
+   diagnostics distinguish patch distance from closest-hit distance.
+7. Require a usable forward patch plus ≥50% coverage, ≥35% non-floor coverage in
+   each height band and ≥20% in each lateral column. A side hint is stricter:
+   ≥75% overall coverage, ≥60% non-floor coverage per height band, ≥50% per
+   lateral column, patch ≥2 m and ≥0.7 m farther than ahead, and **no individual
+   measured side hit closer than 1.8 m**. Unknown never becomes “far away.”
+   A measured side can be considered without measuring the opposite side.
+8. Prefer an already-confirmed side until a challenger has at least 0.5 m more
+   measured distance. A turn requires three distinct frames and ≥0.25 s of
+   consistent evidence; at a 10 Hz scheduling cap that normally needs a fourth
+   frame. Forward/warning output does not wait for a stationary floor/body scan.
+   Do not treat these constants as measured response time or phone FPS.
+9. Withdraw a turn on new close/unknown depth, side reversal, stale/out-of-order
+   frames, or changed heading. Current raw data drives advice; there is no old
+   clear-space map or display median hiding a new close hit. Frames expire after
+   0.5 s. A cumulative 10° change from an instructed heading forces rechecking.
+10. Process at most 10 times/second, keeping only scalar advice/debounce state.
+    No queued or retained ARFrames, RGB images, depth maps, room map or uploads.
+    “Last analysis pass” measures local processing wall time, **not sensor-to-
+    speech latency**.
 
-- **KEEP HEADING** only after the sampled **near** space and floor checks pass
-  and settle. This does not certify a safe path or permission to start walking.
-- **SLOW · AHEAD** for a farther measured obstacle (enter warning at 2.4 m, leave
-  at 2.7 m). A wall about 2.2 m away is an early warning, not an automatic STOP,
-  provided the near-space checks pass. Short speech includes an approximate
-  distance rounded to half a metre; decimal changes do not restart the sentence.
-- **STOP · TURN LEFT/RIGHT 30°/50°/70°** only when a close obstruction is measured
-  ahead and a side has observed near space and floor support. Stop first, turn
-  **in place** with the phone aligned to the body, and wait for a fresh forward
-  assessment. Do not sidestep or follow a latched turn while walking.
-- **STOP · SCAN LEFT/RIGHT** when no turn is measured but another heading can be
-  scanned. This explicitly says to scan with the phone, **not step**. Missing
-  floor instead gives a specific tilt-down/floor-scan instruction.
-- **STOP**, with the reason, for missing forward depth, incomplete floor support,
-  an uncertain/changed view, or no observed alternative. Unknown is never ranked
-  as an open or distant route. A known left alternative can be considered even
-  if the right is unknown; an unknown ahead alone never triggers a turn.
+These checks are for a **limited sensing band**. Even a fully measured band does
+not establish person-sized clearance, footing, a destination route, or a safe
+walking direction. Steps, holes, glass, thin hazards and obstacles outside the
+camera field may be missed. Do not use this for independent blind walking or
+road crossing.
 
-This mode does **not** pick the largest of the three displayed meter readings.
-Within the locked current-frame buffers it instead:
+## Speech
 
-1. Samples a separate 64 × 48 full-depth grid (3,072 locations) using actual camera
-   intrinsics and world pose. Keeps only high-confidence, in-range depth. The
-   three existing display meters retain their own 360-cell pipeline.
-2. Establishes a level reference from classified floor polygons below the camera
-   (camera-to-floor software window 0.6–1.7 m). Floor support is checked across a
-   one-metre-wide **near** planning envelope, from 0.3 to 1.5 m ahead. This is polygon support,
-   not proof that there are no holes, steps or drop-offs within a plane estimate.
-3. Tests hits 0.15–2.05 m above the reference floor, looking up to 3 m along each
-   candidate heading. Hits within the 1.5 m near horizon plus 0.15 m margin block
-   that candidate. Farther hits warn rather than blocking the whole room.
-   Even an isolated supported hit can veto a corridor; there is no six-point
-   outlier suppression in this obstacle pass.
-4. Projects 75 near-space probes per heading: five widths, five heights
-   (0.2–1.8 m above floor), and stations at 1.2/1.35/1.5 m. Tests **seven headings**:
-   forward and ±30°/50°/70°. The previous ±12° / 2.0–2.6 m volume often overlapped
-   the same wall in every candidate. The closest body plane must also fit a
-   waist-level camera view; synthetic projection tests cover this failure mode.
-5. For every probe, requires at least five high-confidence, supported-range
-   samples in its 3 × 3 pixel neighborhood, measured at least 0.15 m beyond the
-   probe in camera-Z depth. Any supported closer neighbor vetoes that probe.
-   An **in-view uncertain patch stays Unknown even if an older view was clear**.
-   Every probe, floor support, and the dense obstacle pass must pass; empty arrays
-   cannot pass. The obstruction pass also checks hits inside the near volume,
-   rather than assuming that far probe rays prove all space before them is empty.
-6. Keeps at most 12 geometric depth snapshots to briefly stitch off-camera
-   space during a stationary scan. Uses actual world coordinates, not old screen
-   columns. Forward unseen-view evidence expires after 1.0 s; turn evidence after
-   1.2 s. Current depth must still be fresh within 0.5 s. A 15 cm translation from
-   the scan origin, tracking loss, Stop/background, bad timestamps, a long frame
-   gap, or floor-level jump clears the memory. No ARFrame/RGB/buffer is retained;
-   masked scalar depth and world points are kept **in RAM only**, never persisted
-   or uploaded. This short memory is not a persistent map or dynamic-hazard guarantee.
-7. Prefers forward; otherwise chooses the smallest eligible measured turn. Needs
-   >=0.25 s/three distinct frames for forward/warning, >=0.35 s/three frames for a
-   turn (at a 10 Hz cap these usually need another frame). Turns additionally need
-   a steady pose (12 cm/10° reference-view tolerance). Warning hysteresis avoids
-   switching between forward/warning on decimal noise and does not insert a STOP
-   when merely entering the distant-warning band. Ties are deterministic, not a
-   proof that one side is safer or an optimal route.
-8. Removes directions on new close obstructions, unknown data, floor-level jumps,
-   tracking loss, stale/out-of-order frames or heading changes. Turn candidates
-   reset on movement; a new forward check is required after reorientation.
+- Short action-first messages use Apple's on-device speech synthesizer.
+- Normal sentences finish; only a new STOP revokes a lower-priority obsolete
+  instruction immediately. Turn hints do not interrupt ordinary speech.
+- No utterance backlog: only the latest advice is offered. Actual completion
+  callbacks and a 0.8 s gap pace speech. Persistent semantic states can remind
+  after 12 s; decimal distance changes do not restart narration.
+- Repeat waits for idle speech. Distances speaks the three **current closest
+  sampled** readings, including Unknown, after checking freshness.
+- A speed slider is available. Apple's assistive-technology voice/speed settings
+  take precedence when VoiceOver is enabled. Stop, mute and background cancel speech.
 
-The 1.5 m horizon, margin, width, height and warning band are **unvalidated fixed
-prototype settings**, not safe stopping distances and not adapted to walking speed.
-Do not defer stopping until a threshold when a cane/helper or your own assessment
-indicates danger. Body orientation is not independently tracked.
+## Removed workflow
 
-Processing remains bounded to at most 10 Hz with no retained ARFrames, RGB
-uploads, paid API or utterance backlog. These are scheduling/algorithm constants,
-**not measured response time, FPS or accuracy claims**. Normal messages finish;
-a new walking-mode STOP may interrupt lower-priority speech through the existing
-escalation policy. A walking-mode STOP specifically revokes an active heading/turn
-instruction **without** the legacy one-second/six-second interruption cooldown:
-finishing an obsolete movement instruction would be unsafe. Once a STOP sentence
-is playing, routine direction/reason changes do not repeatedly cut it off. This
-exception is deliberate; smooth audio must not preserve a withdrawn turn command.
+The floor-gated 75-probe / seven-heading obstacle demo and its scan-memory engine
+were removed from the app and source. Its assumptions made the interaction
+unusable in the user's room: good distance readings could still lead to repeated
+floor/side scans. That implementation remains recoverable in Git history
+(commit `1ba98fd`).
 
-The tests use synthetic space/depth cases, not a clinical or mobility evaluation.
-Sparse samples, unobserved near-foot/overhead areas, glass, classification errors
-and moving hazards remain limitations. At some holding heights the camera cannot
-observe all probes; STOP is intentional, not a promise of a route. Try a stationary
-waist-to-lower-chest-height setup with a sighted helper. No setting or passed test
-makes independent blind walking safe. Real-device performance, distances, false
-negatives, reaction time and accessibility require systematic validation.
+The generic older inspection utilities and their compatibility tests remain in
+DepthCore, but **the app does not call their SCAN/CHECK or floor-gated guidance**.
+The production native flow calls LiveProximityGuide only.
 
-## Direction to inspect (not permission to walk)
-
-This is the previous measurement-inspection mode, available with obstacle guidance
-turned **off**. Its SCAN/CHECK commands concern only the phone, not body direction.
-
-The three numbers cannot establish a traversable corridor, detect every step or
-drop-off, or account for body width. The native app therefore says **Check left,
-Check ahead, Check right**, or explains why no direction is selected. These are
-phone-relative regions to inspect while stationary, not navigation commands.
-
-- Requires fresh, ordered data, a classified floor, and a valid distance with
-  at least 60% in-range/high-confidence grid coverage in **all three** regions
-  **for a CHECK comparison**. If a region is missing/low-coverage, the app instead
-  gives a distinct **SCAN [region]** instruction to acquire depth with the phone.
-  A SCAN is never a confirmed comparison or a walking recommendation; that region
-  stays Unknown if depth is absent. The raw sensor/coverage thresholds are unchanged.
-  A floor somewhere in the map does not establish a continuous floor under a route.
-- Requires an upright portrait view, aiming within 25° of level; restarts the
-  comparison after more than 12 cm translation or 10° rotation from the reference
-  view. These pose checks reduce mixing scenes; they do not detect walking reliably.
-- Normally a candidate must persist for at least 0.8 s across five distinct
-  frames, without a gap longer than 0.5 s. A **strong-reading fast path** requires
-  at least 0.35 s and four distinct frames: every contributing frame must have
-  >=80% coverage in all regions, each region's range variation <=0.2 m, and
-  stronger margins. A side needs >=2 m range, >=1 m advantage over ahead and
-  >=0.8 m over the opposite side; ahead needs >=2.25 m with both sides >=1.25 m.
-  These are acquisition thresholds, **not measured end-to-end response times or
-  accuracy percentages**. Other usable readings still take the normal path.
-  Raw current-frame distances determine eligibility, so display smoothing
-  cannot preserve a now-ineligible side.
-- Prefers inspecting ahead if its supported surface is at least 1.75 m away and
-  neither side has a supported surface closer than 0.75 m. Otherwise, a side
-  needs a surface at least 1.75 m away, at least 0.6 m farther than ahead, and
-  at least 0.5 m farther than the opposite side. A large value alone never wins.
-- Similar distances, all-nearby surfaces, missing/low-coverage depth, unclassified
-  floor, excessive tilt, or a changed view immediately withdraw the visual choice.
-  Reversals must settle again; the previous direction is not held through uncertainty.
-- Recovery prioritizes missing Ahead depth; otherwise it keeps one uncertain side
-  until that side recovers, avoiding scan-prompt flipping as coverage fluctuates.
-  Once all regions recover, CHECK acquisition starts again from zero. An unknown
-  side is not inserted into a distance ranking or treated as farther/open space.
-- Close-ahead warnings still start without waiting for direction acquisition.
-  Short prompts put the action first ("Pause. Check right with the phone."). A
-  direction that has already stabilized does not wait through a second voice
-  debounce or the ordinary three-second start cooldown; it still waits for the
-  current sentence and the 0.8 s completion gap. No ordinary change cuts speech.
-  The already-playing spoken snapshot can briefly differ from the live panel.
-
-The large advice card and Start/Stop/Repeat controls are above the preview and
-distances, not hidden below the camera. Full reasons are in "Why this advice?".
-This makes the recommendation easier to find without inventing certainty.
-Primary direction prompts stay brief; **Distances** reads all three current
-surface measurements on demand, including Unknown. Like Repeat, it never cuts
-off a sentence already playing. It rechecks freshness at the tap and does not
-queue an old distance readout.
-
-All thresholds above are **unvalidated engineering heuristics**, not measured
-error bounds, clinically established margins, or a collision-avoidance guarantee.
-The app never says a path is safe or tells someone to start walking. It needs
-systematic supervised physical and accessibility testing before navigation use.
-
-Filters/thresholds are engineering heuristics, not established safety margins or
-validated accuracy guarantees. LiDAR can fail on glass, mirrors, dark/reflective
-surfaces, sunlight, occlusion, motion and uncertain tracking. Floor classification
-may be absent or wrong. Hazards outside the sampling grid can be missed. Unknown
-does not mean clear. Do not rely on this for stairs/drop-offs, curbs, traffic,
-overhead clearance, mobility-aid replacement or road crossing.
-
-## Deliberate limitations
-
-This native prototype measures **surface geometry**. It does not yet fuse the web
-COCO-SSD people/furniture labels with native depth or announce laptop/TV/keyboard
-class labels. Per-object LiDAR requires native detections aligned to the **same
-ARFrame** before claiming those capabilities. No RGB/depth data is recorded or
-uploaded. No analytics, API keys, microphone, location or photo-library access.
-
-## Tests and build checks
+## Build and test checks
 
 The GitHub **Native LiDAR checks** workflow runs:
 
-1. SwiftPM depth-core XCTest tests on macOS with full Xcode.
-2. Xcode app build and the same core tests on an installed iPhone simulator.
-3. Unsigned Release compilation for physical iOS/ARM64 devices.
-4. Existing website tests and production build, in a separate Ubuntu job.
+1. SwiftPM core tests on macOS with full Xcode.
+2. The app build and the same core tests on an installed iPhone simulator.
+3. Unsigned Release compilation for physical iOS/ARM64.
+4. Website regression tests and production build in a separate Ubuntu job.
 
-It saves XML, Xcode result bundles and build logs for diagnosis. A simulator or
-unsigned device build does **not** validate a real LiDAR feed, signing, actual
-phone performance or distance accuracy. No Apple Account is used in CI.
+Logs, XML and Xcode result bundles are saved for diagnosis. CI does not need an
+Apple Account. A simulator/unsigned build does **not** validate signing, sensor
+behavior, physical accuracy, end-to-end latency or safe navigation.
 
-Locally, full Xcode allows `swift test --package-path native/LanternLiDAR` and
-Product > Test in the supplied scheme. With only Command Line Tools:
+Locally:
+
+```sh
+swift test --package-path native/LanternLiDAR
+```
+
+With only Command Line Tools, core compilation may work while XCTest/iOS checks
+remain unavailable:
 
 ```sh
 swift build --package-path native/LanternLiDAR --target DepthCore
 ```
 
-The core may compile while XCTest and all iOS SDK checks remain unavailable.
-Tests use synthetic grids for confidence/coverage, connected patches vs outliers,
-floor masking, stale/out-of-order frames, loss/return, closer surfaces, smoothing,
-unprojection and conservative cues. They do not establish sensor accuracy.
-Direction tests cover all 343 combinations of seven synthetic distances in three
-regions, plus missing/floor-only depth, stronger coverage, pose changes, tilt,
-reversals, flickering candidates, stale/repeated frames, and speech completion.
-Obstacle-guide tests additionally cover observed/blocked/unknown corridor mixes,
-side independence, full probe counts, every-probe requirements, thin closer hits,
-floor gaps, body-envelope geometry, movement, turns, stale data and STOP priority.
-The near-field revision adds a projected analytic room fixture: a 2.2 m wall gives
-an early warning without a scan at the fixture's waist-level camera pose; a new
-0.7 m wall revokes it immediately; a 0.9 m narrow central obstacle admits a measured
-50° alternative after a side scan. These are **synthetic geometry results**, not
-real-phone success rates. Tests also cover warning hysteresis, malformed/duplicate
-headings, floor-specific recovery, world-view stitching, bounded storage, motion
-and age expiry, and current bad/closer depth overriding old free observations.
+Tests cover fresh/stale/invalid depth, floor filtering, thin hits vs far patches,
+coverage across height and lateral bands, left/right selection, unknown-side
+rejection, close warnings, temporal stability, cumulative turns, speech completion
+and immediate STOP cancellation. The live guide is checked over all 343
+combinations of seven synthetic distances across three regions. A synthetic
+portrait-camera fixture checks ray visibility and projection round trips; it is
+not a measured iPhone FOV or accuracy result.
 
-## Physical-device acceptance checklist
+## Physical checks still required
 
-Initial iPhone 15 Pro Max smoke test: installed and launched using Personal Team
-signing; the user reported wall distances decreasing as the phone moved closer,
-with intermittent Unknown readings. This confirms a basic live-depth interaction,
-**not measured accuracy, comprehensive acceptance, or safe navigation**. The
-checklist below still needs systematic physical testing; automated tests cannot
-replace it.
+Earlier iPhone 15 Pro Max tests confirmed live wall readings changing with
+distance and improved sentence completion. User feedback rejected the old
+floor-scan interaction. Neither observation validates this replacement.
 
-Audio/direction smoke test: the user reported clearer, complete iPhone speech and
-confirmed that the initial direction panel and speech work. This is user feedback,
-not an accessibility study or proof of safe route selection. The subsequent larger
-advice card, adaptive fast acquisition and shorter prompts were installed. The user
-then reported unavailable guidance and supplied a screenshot: Left ~1.9 m/77%,
-Ahead ~1.4 m/83%, Right Unknown/low-confidence, with a classified floor. This
-identified the all-three-region comparison gate, not a floor-classification failure.
-The follow-up targeted SCAN recovery and Stop-label contrast fix require a new
-physical check; automated tests alone do not confirm sensor behavior or response time.
+For the new version, test **stationary with a sighted helper**:
 
-The subsequent obstacle-guidance mode is a new algorithm, not a relabeling of
-SCAN. Its physical behavior is **not yet validated**. Start with stationary,
-supervised checks of STOP, an observed forward setup, and a near obstruction plus
-an observed side alternative. Never validate it by walking blind into obstacles.
+- Start and face an opaque surface around 2 m away. Confirm a warning appears
+  without any floor/room scan. Record time to first reading and actual errors.
+- Stay still while a helper brings an opaque surface closer. Confirm a STOP and,
+  if one side is well measured, the correct relative stop-and-turn hint. Do not
+  test by walking into an obstacle.
+- Remove/obscure a side: its hint must withdraw, not retain old advice.
+- Reorient in place; obsolete turns must cancel before new advice.
+- Check close side surfaces, thin objects, dark/reflective materials, low and
+  overhead hazards, stairs/drop-offs, and out-of-view limitations under supervision.
+- Check permission denial, mute, speed, Repeat, Distances, Stop, background and
+  session interruption. Listen for complete non-overlapping normal sentences.
 
-The user subsequently supplied screenshots showing generic STOP even around
-2.1–2.6 m readings, with incomplete floor coverage and several blocked body probes.
-The near-field revision above addresses the overlong shared volume, narrow turn
-fan and camera-visibility problem. **The revised physical behavior is pending a
-new stationary, supervised check**; passed room simulations are not device validation.
+No measured accuracy, safe-route success rate, walking speed, or latency claim
+is established by these tests.
 
-While stationary (with a sighted helper if needed):
+## Privacy and scope
 
-- Check an opaque surface at known camera-to-surface distances around 0.5, 1, 2,
-  and 3 m. Record actual error/variability and time to first reading before
-  reporting accuracy. Measuring here is **validation, not operating calibration**.
-- Pan away and return: fresh meters must reappear without a chair measurement
-  or confirmation; absent/uncertain data must not leave a stale reading.
-- Test portrait alignment/crop, floor vs table, dark/reflective surfaces, and
-  covering the sensor. Unreliable readings must remain Unknown.
-- Test first permission grant/denial, Stop, background/return and interruptions.
-  Camera and voice must stop correctly. Do not test by walking toward obstacles.
-- In a stationary supervised setup, compare a near opaque surface ahead with a
-  farther side. Wait for a steady-view check, then pan/tilt, obscure one region,
-  or bring a surface into that side; the direction must withdraw and settle anew.
-  Similar side distances must not cause rapid left/right flipping. Listen for
-  complete, non-overlapping sentences and check Repeat/mute/voice speed.
+No API keys, microphone, location, photo-library access, analytics, recording or
+uploads. Sensor processing stays on the phone. Native object labels are not
+implemented: this measures geometry rather than naming laptops/TVs/keyboards.
+Fusing semantic detections with depth would require alignment to the same frame.
 
-## Primary research
+## Primary references
 
-- [Apple: iPhone 15 Pro Max LiDAR hardware](https://support.apple.com/en-us/111828)
-- [Apple: scene depth and capability checks](https://developer.apple.com/documentation/arkit/arconfiguration/framesemantics-swift.struct/scenedepth)
-- [Apple: depth in meters](https://developer.apple.com/documentation/arkit/ardepthdata/depthmap)
+- [Apple: scene-depth capability](https://developer.apple.com/documentation/arkit/arconfiguration/framesemantics-swift.struct/scenedepth)
 - [Apple: confidence and surface limitations](https://developer.apple.com/documentation/arkit/ardepthdata/confidencemap)
-- [Apple: depth unprojection sample](https://developer.apple.com/documentation/arkit/displaying-a-point-cloud-using-scene-depth)
-- [WebKit engineer: iOS WebXR unsupported](https://bugs.webkit.org/show_bug.cgi?id=309550#c2)
+- [Apple: scene-depth point cloud / unprojection](https://developer.apple.com/documentation/arkit/displaying-a-point-cloud-using-scene-depth)
 - [Apple: physical-device development](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices)
 - [Apple: Personal Team signing](https://help.apple.com/xcode/mac/current/en.lproj/dev60b6fbbc7.html)
-- [Apple: Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
-- [Google: Android ARCore depth](https://developers.google.com/ar/develop/depth)
-
-ARCore is an Android alternative, often depth-from-motion with optional ToF
-fusion—not a way to expose iPhone LiDAR in Safari. Installing the website as a
-PWA does not grant it native ARKit access.

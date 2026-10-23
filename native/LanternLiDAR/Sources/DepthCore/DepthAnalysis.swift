@@ -158,17 +158,20 @@ public struct DepthCue: Equatable, Sendable {
     public let speech: String
     public let key: String
     public let urgent: Bool
-    // Legacy close-ahead cues and experimental walking-mode STOP cues use the
-    // pause prefix. Ordinary side/direction changes never cut another warning.
+    // Only a new live STOP revokes an obsolete instruction immediately.
+    // Ordinary live hints finish sentences; legacy pause cues remain compatible.
     public var speechPriority: Int {
-        if key.hasPrefix("pause:walk-stop-") { return 3 }
+        if key.hasPrefix("live:stop-") { return 3 }
+        // Live turn hints finish the current sentence. Only a STOP revokes an
+        // obsolete action immediately; a turn is not a new emergency escalation.
+        if key.hasPrefix("live:turn-") { return 1 }
         return key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0
     }
     // These keys are emitted only after the sensor-independent guide has already
     // stabilized a direction; do not add a second speech debounce on top of it.
     public var hasConfirmedInspection: Bool { key.contains(":check-") }
     public var hasStabilizedDirection: Bool {
-        hasConfirmedInspection || key.hasPrefix("pause:walk-turn-") || key == "walk:ahead" || key == "walk:caution"
+        hasConfirmedInspection || key.hasPrefix("live:turn-") || key == "live:ahead" || key == "live:caution"
     }
 }
 
