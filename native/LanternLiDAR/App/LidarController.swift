@@ -199,9 +199,9 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         // never a guessed camera height or an arbitrary horizontal tabletop.
         let floorPatches = floors.compactMap { anchor -> (simd_float4x4, Float, [SIMD2<Double>])? in
             let geometry = anchor.geometry
-            guard geometry.boundaryVertexCount >= 3, geometry.boundaryVertexCount <= 512 else { return nil }
-            let boundary = (0..<geometry.boundaryVertexCount).map { index in
-                let v = geometry.boundaryVertices[index]
+            let vertices = geometry.boundaryVertices
+            guard vertices.count >= 3, vertices.count <= 512 else { return nil }
+            let boundary = vertices.map { v in
                 return SIMD2<Double>(Double(v.x), Double(v.z))
             }
             guard boundary.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
