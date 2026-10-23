@@ -1,0 +1,251 @@
+import ARKit
+import AVFoundation
+import Combine
+import DepthCore
+import QuartzCore
+import simd
+import UIKit
+
+/// All delegate callbacks and published state use the main queue. ARKit acquires
+/// depth itself; this app only samples 360 cells at <= 10 Hz, never queues frames.
+final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
+    let session = ARSession()
+    @Published private(set) var running = false
+    @Published private(set) var requestingPermission = false
+    @Published private(set) var status = "Camera off"
+    @Published private(set) var readings: [Sector: SectorReading] = [:]
+    @Published private(set) var floorKnown = false
+    @Published private(set) var cue = DepthGuidance.cue([:], floorKnown: false)
+    @Published var voiceEnabled = true {
+        didSet { if !voiceEnabled { speech.stopSpeaking(at: .immediate) } }
+    }
+    var viewport = CGSize.zero
+    let supported = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+        && AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) != nil
+    private var generation = 0
+    private var deferredPermissionStart: Int?
+    private var startedAt = Double.infinity
+    private var lastProcessed = -Double.infinity
+    private var lastReceived: Double?
+    private var smoother = DepthSmoother()
+    private var expiryTimer: Timer?
+    private let speech = AVSpeechSynthesizer()
+    private var spokenKey: String?
+    private var spokenAt = -Double.infinity
+
+    override init() {
+        super.init()
+        session.delegate = self
+        session.delegateQueue = .main
+    }
+
+    func start() {
+        guard supported else {
+            status = "LiDAR unavailable. Use a supported physical iPhone Pro or iPad Pro."
+            return
+        }
+        guard !running && !requestingPermission else { return }
+        generation += 1
+        let token = generation
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: begin(token: token)
+        case .notDetermined:
+            requestingPermission = true
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self, token == self.generation else { return }
+                    if granted {
+                        // A permission sheet can temporarily make the scene
+                        // inactive. Start only after it is active again.
+                        self.deferredPermissionStart = token
+                        self.finishPermissionStartIfNeeded()
+                    } else {
+                        self.requestingPermission = false
+                        self.status = "Camera access denied. Allow Lantern LiDAR in iPhone Settings."
+                    }
+                }
+            }
+        default: status = "Camera access denied. Allow Lantern LiDAR in iPhone Settings."
+        }
+    }
+
+    func finishPermissionStartIfNeeded() {
+        guard let token = deferredPermissionStart,
+              UIApplication.shared.applicationState == .active else { return }
+        deferredPermissionStart = nil
+        requestingPermission = false
+        begin(token: token)
+    }
+
+    private func begin(token: Int) {
+        guard token == generation, UIApplication.shared.applicationState == .active else { return }
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.worldAlignment = .gravity
+        configuration.frameSemantics = [.sceneDepth]
+        configuration.planeDetection = [.horizontal]
+        configuration.environmentTexturing = .none
+        clearReadings()
+        lastProcessed = -.infinity
+        spokenKey = nil
+        spokenAt = -.infinity
+        startedAt = CACurrentMediaTime()
+        session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        running = true
+        status = "Starting LiDAR. Aim forward and move the phone slowly."
+        expiryTimer?.invalidate()
+        expiryTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, self.running else { return }
+            guard let stamp = self.lastReceived,
+                  DepthAnalysis.isFresh(capturedAt: stamp, now: CACurrentMediaTime()) else {
+                self.clearReadings()
+                self.status = "Waiting for fresh, confident LiDAR depth."
+                return
+            }
+        }
+    }
+
+    func stop() {
+        generation += 1
+        deferredPermissionStart = nil
+        startedAt = .infinity
+        requestingPermission = false
+        running = false
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        session.pause()
+        speech.stopSpeaking(at: .immediate)
+        clearReadings()
+        status = "Camera off"
+    }
+
+    private func clearReadings() {
+        smoother.reset()
+        readings = [:]
+        floorKnown = false
+        lastReceived = nil
+        cue = DepthGuidance.cue([:], floorKnown: false)
+        speech.stopSpeaking(at: .immediate)
+    }
+
+    func repeatCue() { say(cue, manual: true) }
+
+    private func say(_ cue: DepthCue, manual: Bool = false) {
+        guard voiceEnabled, running else { return }
+        let now = CACurrentMediaTime()
+        if !manual {
+            let interval = cue.key == spokenKey ? 10.0 : 3.0
+            guard now - spokenAt >= interval, !speech.isSpeaking else { return }
+            if cue.key == spokenKey && !cue.urgent { return }
+        }
+        speech.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: cue.speech)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        speech.speak(utterance)
+        spokenKey = cue.key
+        spokenAt = now
+    }
+
+    func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard running, frame.timestamp >= startedAt, frame.timestamp - lastProcessed >= 0.1 else { return }
+        lastProcessed = frame.timestamp
+        guard DepthAnalysis.isFresh(capturedAt: frame.timestamp, now: CACurrentMediaTime()) else {
+            clearReadings()
+            status = "Depth delayed. Pause and wait for a fresh view."
+            return
+        }
+        guard case .normal = frame.camera.trackingState else {
+            clearReadings()
+            status = "Tracking uncertain. Hold the phone steady and aim forward."
+            return
+        }
+        guard viewport.width > 0, viewport.height > 0,
+              let depth = frame.sceneDepth, let confidence = depth.confidenceMap,
+              let sampled = sample(frame: frame, depth: depth.depthMap, confidence: confidence) else {
+            clearReadings()
+            status = "LiDAR depth or confidence unavailable. Distance unknown."
+            return
+        }
+        lastReceived = frame.timestamp
+        floorKnown = sampled.floorKnown
+        readings = smoother.update(sampled.readings, capturedAt: frame.timestamp, now: CACurrentMediaTime())
+        cue = DepthGuidance.cue(readings, floorKnown: floorKnown)
+        status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
+        say(cue)
+    }
+
+    private func sample(frame: ARFrame, depth: CVPixelBuffer, confidence: CVPixelBuffer)
+        -> (readings: [Sector: SectorReading], floorKnown: Bool)? {
+        guard CVPixelBufferGetPixelFormatType(depth) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferGetPixelFormatType(confidence) == kCVPixelFormatType_OneComponent8 else { return nil }
+        let width = CVPixelBufferGetWidth(depth), height = CVPixelBufferGetHeight(depth)
+        guard width > 0, height > 0,
+              CVPixelBufferGetWidth(confidence) == width,
+              CVPixelBufferGetHeight(confidence) == height else { return nil }
+        guard CVPixelBufferLockBaseAddress(depth, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(depth, .readOnly) }
+        guard CVPixelBufferLockBaseAddress(confidence, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(confidence, .readOnly) }
+        guard let db = CVPixelBufferGetBaseAddress(depth), let cb = CVPixelBufferGetBaseAddress(confidence) else { return nil }
+        let depthStride = CVPixelBufferGetBytesPerRow(depth), confidenceStride = CVPixelBufferGetBytesPerRow(confidence)
+        guard depthStride >= width * MemoryLayout<Float>.stride, confidenceStride >= width else { return nil }
+        let displayToImage = frame.displayTransform(for: .portrait, viewportSize: viewport).inverted()
+        let resolution = frame.camera.imageResolution
+        let intrinsics = frame.camera.intrinsics
+        let floors = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter {
+            $0.alignment == .horizontal && $0.classification == .floor
+        }
+        // Test each point against a classified floor anchor's bounded rectangle,
+        // never a guessed camera height or an arbitrary horizontal tabletop.
+        let floorTransforms = floors.map { (simd_inverse($0.transform), $0.center, $0.extent) }
+        var result: [Sector: SectorReading] = [:]
+        for sector in Sector.allCases {
+            var cells: [DepthCell] = []
+            let bounds = sector.horizontalBounds
+            for row in 0..<DepthAnalysis.rows {
+                for column in 0..<DepthAnalysis.columns {
+                    let sx = bounds.lowerBound + (Double(column) + 0.5) / Double(DepthAnalysis.columns) * (bounds.upperBound - bounds.lowerBound)
+                    let sy = 0.3 + (Double(row) + 0.5) / Double(DepthAnalysis.rows) * 0.5
+                    let imagePoint = CGPoint(x: sx, y: sy).applying(displayToImage)
+                    guard imagePoint.x >= 0, imagePoint.x < 1, imagePoint.y >= 0, imagePoint.y < 1 else {
+                        cells.append(.unknown); continue
+                    }
+                    let px = Int(Double(imagePoint.x) * Double(width)), py = Int(Double(imagePoint.y) * Double(height))
+                    let z = db.advanced(by: py * depthStride).assumingMemoryBound(to: Float.self)[px]
+                    let quality = cb.advanced(by: py * confidenceStride).assumingMemoryBound(to: UInt8.self)[px]
+                    guard quality == UInt8(ARConfidenceLevel.high.rawValue),
+                          let point = DepthProjection.cameraPoint(
+                            imageX: (Double(px) + 0.5) / Double(width) * Double(resolution.width),
+                            imageY: (Double(py) + 0.5) / Double(height) * Double(resolution.height),
+                            depth: Double(z), fx: Double(intrinsics[0][0]), fy: Double(intrinsics[1][1]),
+                            cx: Double(intrinsics[2][0]), cy: Double(intrinsics[2][1])) else {
+                        cells.append(.unknown); continue
+                    }
+                    let p = SIMD4<Float>(Float(point.x), Float(point.y), Float(point.z), 1)
+                    let world = frame.camera.transform * p
+                    let isFloor = floorTransforms.contains { inverse, center, extent in
+                        let local = inverse * world
+                        return abs(local.y - center.y) < 0.08 && extent.x > 0 && extent.z > 0
+                            && abs(local.x - center.x) < extent.x / 2
+                            && abs(local.z - center.z) < extent.z / 2
+                    }
+                    // Convert the unprojected point to slant range rather than
+                    // treating off-axis camera-Z depth as Euclidean distance.
+                    let meters = sqrt(point.x * point.x + point.y * point.y + point.z * point.z)
+                    cells.append(DepthCell(meters: meters, confidence: quality, isKnownFloor: isFloor))
+                }
+            }
+            result[sector] = DepthAnalysis.analyze(cells)
+        }
+        return (result, !floors.isEmpty)
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) {
+        stop()
+        status = "LiDAR interrupted. Tap Start when ready."
+    }
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        stop()
+        status = "LiDAR session failed. Close other camera apps and tap Start to retry."
+    }
+}

@@ -17,6 +17,11 @@ out/
 es/
 lib/
 coverage/
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
 
 # IDE and OS files
 .vscode/

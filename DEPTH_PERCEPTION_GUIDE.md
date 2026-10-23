@@ -1,5 +1,11 @@
 # Depth Perception System
 
+> Historical design notes, not verified capabilities of the current app. For
+> actual native LiDAR code, limitations and testing, see
+> [Lantern LiDAR](native/LanternLiDAR/README.md). The website's calibrated size
+> ratios and a real sensor feed are different systems. Do not interpret the
+> safety/accuracy claims below as validation results.
+
 ## 🧠 Overview
 
 The Lantern app now includes **monocular depth perception** - estimating distance to objects using a single camera. This enhances navigation safety by understanding not just *what* is in the scene, but *how far away* it is.

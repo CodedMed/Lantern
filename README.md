@@ -89,6 +89,19 @@ There are no client-side routes requiring SPA rewrites. The static site needs no
 
 ## Native app status
 
+### Native LiDAR prototype (separate from website/Expo)
+
+[`native/LanternLiDAR`](native/LanternLiDAR/README.md) contains an Apple-framework-
+only SwiftUI app and Xcode project for iPhone 15 Pro Max and other runtime-verified
+LiDAR devices. It reads ARKit metric depth directly, without the web app's chair
+calibration. iPhone Safari/PWAs cannot expose this feed to the Render website.
+It measures surface geometry; COCO-SSD object labels are not yet fused with native
+depth. See its README for device setup, CI checks, limitations and physical
+acceptance testing. Do not equate compilation or synthetic tests with validated
+LiDAR accuracy or safe navigation. Existing web files are unchanged.
+
+### Legacy Expo app
+
 The original Expo app is retained. Its scanner now identifies the actual COCO-SSD model, disposes decoded tensors and temporary captures, requests camera permission explicitly, serializes auto-scans, stops camera/speech when backgrounded, and uses real saved preferences. The simulated microphone transcription button was removed rather than presented as working speech recognition.
 
 The native TensorFlow adapter is older than Expo SDK 54 and has legacy peer dependency constraints. The **browser build is the tested demo target**; these native changes require a physical-device Expo/development-build test before claiming native support. Do not assume the hosted browser app is an App Store-ready native release.
