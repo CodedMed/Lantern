@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { detector } from "./detector.mjs";
 import { requestCamera, stopStream } from "./camera.mjs";
-import { describeScene, SAFETY_NOTE } from "../../utils/scene.mjs";
+import { LiveLoop, isFreshFrame } from "./liveLoop.mjs";
+import { Narrator } from "./narrator.mjs";
+import { getGuidance, GuidanceFilter } from "../../utils/guidance.mjs";
 import {
   readSettings,
   sanitizeSettings,
@@ -10,20 +12,18 @@ import {
 } from "../../utils/preferences.mjs";
 import "./style.css";
 
-const SAMPLE = "/sample-scene.jpg";
-const COLORS = ["#b8efc5", "#ffd48b", "#b9d9ff", "#e8c5ff"];
+const IDLE = { type: "idle" };
+const INITIAL_CUE = {
+  title: "Camera off.",
+  detail: "Start the camera for live object alerts.",
+};
 
-function Icon({ name, size = 20 }) {
+function Icon({ name, size = 22 }) {
   const paths = {
     camera: (
       <>
-        <path d="m14 4 2 3h4a2 2 0 0 1 2 2v10H2V9a2 2 0 0 1 2-2h4l2-3z" />
-        <circle cx="12" cy="13" r="4" />
-      </>
-    ),
-    upload: (
-      <>
-        <path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5" />
+        <path d="m9 5 2-2h2l2 2h6v15H3V5z" />
+        <circle cx="12" cy="12" r="4" />
       </>
     ),
     sound: (
@@ -31,21 +31,37 @@ function Icon({ name, size = 20 }) {
         <path d="m11 4-6 5H2v6h3l6 5zM15 8c3 2 3 6 0 8m3-11c5 4 5 10 0 14" />
       </>
     ),
-    arrow: <path d="M4 12h16m-6-6 6 6-6 6" />,
+    muted: (
+      <>
+        <path d="m11 4-6 5H2v6h3l6 5zM17 9l5 6m0-6-5 6" />
+      </>
+    ),
+    pause: (
+      <>
+        <path d="M8 5v14M16 5v14" />
+      </>
+    ),
+    play: <path d="m7 4 13 8-13 8z" />,
+    flip: (
+      <>
+        <path d="M3 8h14l-4-4M21 16H7l4 4M3 8v5m18 3v-5" />
+      </>
+    ),
+    close: <path d="m6 6 12 12M6 18 18 6" />,
     settings: (
       <>
-        <path d="M4 7h16M4 17h16" />
+        <path d="M3 7h18M3 17h18" />
         <circle cx="9" cy="7" r="3" />
         <circle cx="15" cy="17" r="3" />
       </>
     ),
-    shield: (
+    photo: (
       <>
-        <path d="m12 2 9 4v6c0 6-9 10-9 10S3 18 3 12V6zM8 12l3 3 5-6" />
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <circle cx="8" cy="8" r="1" />
+        <path d="m3 18 6-6 4 4 4-7 4 6" />
       </>
     ),
-    close: <path d="m6 6 12 12M6 18 18 6" />,
-    sparkle: <path d="m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />,
   };
   return (
     <svg
@@ -54,13 +70,94 @@ function Icon({ name, size = 20 }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.6"
+      strokeWidth="1.7"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {paths[name] || paths.sparkle}
+      {paths[name] || paths.camera}
     </svg>
+  );
+}
+
+function Boxes({ frame, size }) {
+  if (!frame) return null;
+  const font = size.width / 22;
+  return (
+    <svg
+      className="boxes"
+      viewBox={`0 0 ${size.width} ${size.height}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-hidden="true"
+    >
+      {frame.detections.slice(0, 8).map((item, index) => {
+        const [top, left, bottom, right] = item.bbox;
+        const x = left * size.width,
+          y = top * size.height;
+        const labelWidth = (item.class.length * 0.56 + 0.8) * font;
+        const labelX = Math.max(2, Math.min(x, size.width - labelWidth - 2));
+        const labelY = Math.max(font * 1.3, y);
+        return (
+          <g key={`${item.class}-${index}`}>
+            <rect
+              x={x}
+              y={y}
+              width={(right - left) * size.width}
+              height={(bottom - top) * size.height}
+              className="box-outline"
+            />
+            <rect
+              x={x}
+              y={y}
+              width={(right - left) * size.width}
+              height={(bottom - top) * size.height}
+              className="box-line"
+            />
+            <rect
+              x={labelX}
+              y={labelY - font * 1.25}
+              width={labelWidth}
+              height={font * 1.35}
+              fill="white"
+            />
+            <text
+              x={labelX + font * 0.35}
+              y={labelY - font * 0.23}
+              fontSize={font}
+              fill="black"
+            >
+              {item.class}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function Dialog({ title, onClose, children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    ref.current.showModal();
+    return () => previous?.focus();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className="dialog"
+      onCancel={onClose}
+      onClose={onClose}
+      aria-label={title}
+    >
+      <div className="dialog-heading">
+        <h2>{title}</h2>
+        <button className="icon-button" aria-label="Close" onClick={onClose}>
+          <Icon name="close" />
+        </button>
+      </div>
+      {children}
+    </dialog>
   );
 }
 
@@ -72,234 +169,307 @@ function App() {
       return sanitizeSettings();
     }
   });
-  const [source, setSource] = useState({
-    type: "sample",
-    url: SAMPLE,
-    name: "Sample scene",
-  });
-  const [dimensions, setDimensions] = useState({ width: 640, height: 425 });
-  const [result, setResult] = useState(null);
-  const [status, setStatus] = useState("Ready when you are");
-  const [busy, setBusy] = useState(false);
-  const [cameraPending, setCameraPending] = useState(false);
-  const [cameraReady, setCameraReady] = useState(false);
+  const [source, setSource] = useState(IDLE);
+  const [pending, setPending] = useState(false);
+  const [mediaReady, setMediaReady] = useState(false);
+  const [modelReady, setModelReady] = useState(Boolean(detector.model));
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [frame, setFrame] = useState(null);
+  const [cue, setCue] = useState(INITIAL_CUE);
   const [error, setError] = useState("");
-  const [auto, setAuto] = useState(false);
   const [modal, setModal] = useState(null);
-  const [speaking, setSpeaking] = useState(false);
-  const imageRef = useRef(null),
-    videoRef = useRef(null),
+  const [size, setSize] = useState({ width: 640, height: 960 });
+  const videoRef = useRef(null),
+    imageRef = useRef(null),
     fileRef = useRef(null);
   const streamRef = useRef(null),
-    generation = useRef(0),
-    inFlight = useRef(false);
-  const alive = useRef(true),
-    lastSpoken = useRef(""),
-    lastSpokenAt = useRef(0);
-  const dialogRef = useRef(null),
-    lastFocus = useRef(null);
+    canvasRef = useRef(null),
+    facing = useRef("environment");
+  const generation = useRef(0),
+    alive = useRef(true),
+    pendingRef = useRef(false);
+  const state = useRef({}),
+    loopRef = useRef(null),
+    narratorRef = useRef(null);
+  const filter = useRef(new GuidanceFilter());
   const speechAvailable =
     "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+  state.current = { source, settings, paused };
+  if (!narratorRef.current)
+    narratorRef.current = new Narrator({
+      engine: window.speechSynthesis,
+      makeUtterance: speechAvailable
+        ? (text) => new SpeechSynthesisUtterance(text)
+        : null,
+    });
+  if (!loopRef.current)
+    loopRef.current = new LiveLoop({
+      scan: () => capture(),
+      onResult: (result) => receive(result),
+      onError: () => {
+        setFrame(null);
+        setPaused(true);
+        narratorRef.current.stop();
+        setError("Detection stopped. Hold still and tap Resume to retry.");
+        setCue({
+          title: "Detection stopped.",
+          detail: "No current object information.",
+        });
+      },
+    });
 
+  useEffect(() => {
+    alive.current = true;
+    const onHidden = () => {
+      if (document.hidden) {
+        narratorRef.current.stop();
+        if (streamRef.current || pendingRef.current) stopCamera();
+      }
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      alive.current = false;
+      generation.current++;
+      loopRef.current.stop();
+      stopStream(streamRef.current);
+      narratorRef.current.stop();
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, []);
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     } catch {
       /* private browsing */
     }
-    if (!settings.speech) {
-      window.speechSynthesis?.cancel();
-      setSpeaking(false);
-    }
+    if (!settings.speech) narratorRef.current.stop();
   }, [settings]);
   useEffect(() => {
-    alive.current = true;
-    const onHidden = () => {
-      if (document.hidden) stopCamera();
-    };
-    document.addEventListener("visibilitychange", onHidden);
-    return () => {
-      alive.current = false;
-      generation.current += 1;
-      stopStream(streamRef.current);
-      window.speechSynthesis?.cancel();
-      document.removeEventListener("visibilitychange", onHidden);
-    };
-  }, []);
-  useEffect(() => {
-    if (source.type === "upload") return () => URL.revokeObjectURL(source.url);
+    if (source.type === "photo" && source.url.startsWith("blob:"))
+      return () => URL.revokeObjectURL(source.url);
   }, [source]);
   useEffect(() => {
-    if (!modal) return;
-    lastFocus.current = document.activeElement;
-    dialogRef.current?.showModal();
-    return () => {
-      lastFocus.current?.focus();
-    };
-  }, [modal]);
-  useEffect(() => {
-    if (!auto || source.type !== "camera" || !cameraReady || busy) return;
-    const timer = setTimeout(() => scan(), 1800);
-    return () => clearTimeout(timer);
-  }, [auto, source.type, cameraReady, busy, result, settings.threshold]);
-
-  function update(key, value) {
-    setSettings((current) => sanitizeSettings({ ...current, [key]: value }));
-  }
-  function stopSpeech() {
-    window.speechSynthesis?.cancel();
-    setSpeaking(false);
-  }
-  function speak(text, automatic = false) {
-    if (!speechAvailable || !settings.speech) return;
-    if (
-      automatic &&
-      (text === lastSpoken.current || Date.now() - lastSpokenAt.current < 7000)
-    )
-      return;
-    stopSpeech();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
-    utterance.rate = settings.rate;
-    utterance.onstart = () => setSpeaking(true);
-    utterance.onend = utterance.onerror = () => {
-      if (alive.current) setSpeaking(false);
-    };
-    window.speechSynthesis.speak(utterance);
-    lastSpoken.current = text;
-    lastSpokenAt.current = Date.now();
-  }
-  function stopCamera() {
-    generation.current += 1;
-    stopStream(streamRef.current);
-    streamRef.current = null;
-    setAuto(false);
-    setCameraReady(false);
-    setCameraPending(false);
-    setBusy(false);
-    setResult(null);
-    setSource({ type: "sample", url: SAMPLE, name: "Sample scene" });
-    setStatus("Camera off. Try the sample or upload an image.");
-    stopSpeech();
-  }
-  function selectImage(next) {
-    stopCamera();
-    setError("");
-    setSource(next);
-    setDimensions({ width: 640, height: 425 });
-    setStatus("Image ready to scan");
-  }
-  async function startCamera() {
-    if (cameraPending || inFlight.current) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError(
-        "Camera access needs HTTPS and a supported browser. Try uploading a photo instead.",
-      );
-      return;
-    }
-    const token = ++generation.current;
-    setCameraPending(true);
-    setError("");
-    stopSpeech();
-    try {
-      const stream = await requestCamera(
-        navigator.mediaDevices,
-        () => generation.current === token && alive.current,
-      );
-      if (!stream) return;
-      streamRef.current = stream;
-      stream.getVideoTracks().forEach((track) => {
-        track.onended = () => {
-          if (generation.current === token && alive.current) {
-            stopCamera();
-            setError("Camera disconnected. Reopen it or use a photo.");
-          }
-        };
-      });
-      setResult(null);
-      setSource({ type: "camera", name: "Live camera" });
-      setStatus("Starting camera…");
-    } catch (cause) {
-      if (generation.current !== token) return;
-      const denied =
-        cause.name === "NotAllowedError" || cause.name === "SecurityError";
-      setError(
-        denied
-          ? "Camera access was not granted. Allow it in your browser settings, or use a sample or photo."
-          : "Could not open a camera. It may be in use by another app. Use a sample or photo instead.",
-      );
-    } finally {
-      if (generation.current === token) setCameraPending(false);
-    }
-  }
-  useEffect(() => {
-    if (source.type !== "camera" || !videoRef.current || !streamRef.current)
-      return;
+    if (source.type !== "camera" || !videoRef.current) return;
     const video = videoRef.current;
     video.srcObject = streamRef.current;
     video
       .play()
-      .catch(() => setError("Tap the video to start the camera preview."));
+      .catch(() => setError("Tap the camera view to start its preview."));
   }, [source]);
-
-  async function scan() {
-    if (inFlight.current) return;
-    const element =
-      source.type === "camera" ? videoRef.current : imageRef.current;
-    if (
-      !element ||
-      (source.type === "camera"
-        ? !cameraReady
-        : !element.complete || !element.naturalWidth)
-    ) {
-      setError("Wait for the image or camera preview to load, then try again.");
+  useEffect(() => {
+    if (!mediaReady || !modelReady || paused || modal || source.type === "idle")
       return;
-    }
-    const token = generation.current;
-    // Capture a stable, bounded frame before any asynchronous model loading.
-    const width = element.videoWidth || element.naturalWidth;
-    const height = element.videoHeight || element.naturalHeight;
-    const scale = Math.min(1, 960 / Math.max(width, height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-    canvas
-      .getContext("2d")
-      .drawImage(element, 0, 0, canvas.width, canvas.height);
-    inFlight.current = true;
-    setBusy(true);
+    loopRef.current.start();
+    return () => loopRef.current.stop();
+  }, [source, mediaReady, modelReady, paused, modal]);
+  useEffect(() => {
+    if (!modal) return;
+    narratorRef.current.stop();
+    setFrame(null);
+  }, [modal]);
+  useEffect(() => {
+    if (!frame || source.type !== "camera") return;
+    const timer = setTimeout(
+      () => {
+        setFrame(null);
+        setCue({
+          title: "Waiting for a fresh view.",
+          detail: "Hold the camera steady. Objects may be missed.",
+        });
+      },
+      Math.max(0, 1400 - (performance.now() - frame.capturedAt)),
+    );
+    return () => clearTimeout(timer);
+  }, [frame, source.type]);
+
+  function update(key, value) {
+    setSettings((current) => sanitizeSettings({ ...current, [key]: value }));
+  }
+  function clearView() {
+    generation.current++;
+    loopRef.current.stop();
+    stopStream(streamRef.current);
+    streamRef.current = null;
+    pendingRef.current = false;
+    narratorRef.current.reset();
+    filter.current.reset();
+    setPending(false);
+    setMediaReady(false);
+    setPaused(false);
+    setFrame(null);
     setError("");
-    setResult(null);
-    setStatus("Recognizing objects…");
+  }
+  function stopCamera() {
+    clearView();
+    setSource(IDLE);
+    setCue(INITIAL_CUE);
+  }
+  async function prepareModel() {
+    setModelLoading(true);
+    setModelError(false);
     try {
-      const detection = await detector.detect(
-        canvas,
-        settings.threshold,
-        (message) => {
-          if (alive.current && token === generation.current) setStatus(message);
-        },
-      );
-      if (!alive.current || token !== generation.current) return;
-      const scene = describeScene(detection.detections);
-      setResult({ ...detection, ...scene });
-      setStatus("Scan complete");
-      speak(scene.speech, auto);
-    } catch (cause) {
-      if (alive.current && token === generation.current) {
-        setError(
-          "Recognition failed. Check your connection and retry. If your browser has limited graphics support, try Chrome or Safari.",
-        );
-        setStatus("Scan not completed");
-        setAuto(false);
+      await detector.load();
+      if (alive.current) {
+        setModelReady(true);
+        setModelError(false);
       }
-      console.error("Lantern scan failed:", cause);
+    } catch {
+      if (alive.current) {
+        setModelError(true);
+        setError("Detector could not load. Check your connection and retry.");
+      }
     } finally {
-      canvas.width = canvas.height = 1;
-      inFlight.current = false;
-      if (alive.current && token === generation.current) setBusy(false);
+      if (alive.current) setModelLoading(false);
     }
   }
-  function onUpload(event) {
+  async function startCamera(nextFacing = facing.current) {
+    if (pendingRef.current) return;
+    clearView();
+    setSource(IDLE);
+    setCue({
+      title: "Opening camera…",
+      detail: "Allow camera access when asked.",
+    });
+    const token = generation.current;
+    pendingRef.current = true;
+    setPending(true);
+    if (settings.speech)
+      narratorRef.current.say(
+        { key: "start", speech: "Starting camera.", level: "status" },
+        { manual: true, rate: settings.rate },
+      );
+    prepareModel();
+    try {
+      const stream = await requestCamera(
+        navigator.mediaDevices,
+        () => alive.current && generation.current === token,
+        nextFacing,
+      );
+      if (!stream) return;
+      streamRef.current = stream;
+      facing.current = nextFacing;
+      stream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          if (alive.current && generation.current === token) {
+            stopCamera();
+            setError("Camera disconnected. Tap Start camera to reconnect.");
+          }
+        };
+      });
+      setSource({ type: "camera" });
+      setCue({
+        title: "Getting ready…",
+        detail: "Detection starts automatically.",
+      });
+    } catch (cause) {
+      if (generation.current !== token || !alive.current) return;
+      narratorRef.current.stop();
+      setCue(INITIAL_CUE);
+      setError(
+        cause.name === "NotAllowedError" || cause.name === "SecurityError"
+          ? "Camera access denied. Allow it in browser settings, or try Demo below."
+          : "Camera unavailable. Use HTTPS, close other camera apps, or try Demo below.",
+      );
+    } finally {
+      if (alive.current && generation.current === token) {
+        pendingRef.current = false;
+        setPending(false);
+      }
+    }
+  }
+  function showPhoto(url, name) {
+    clearView();
+    setSize({ width: 640, height: 425 });
+    setSource({ type: "photo", url, name, id: generation.current });
+    setCue({
+      title: "Checking photo…",
+      detail: "This is a still image, not live guidance.",
+    });
+    prepareModel();
+  }
+  async function capture() {
+    const current = state.current;
+    const element =
+      current.source.type === "camera" ? videoRef.current : imageRef.current;
+    const width = element?.videoWidth || element?.naturalWidth;
+    const height = element?.videoHeight || element?.naturalHeight;
+    if (
+      !width ||
+      !height ||
+      (current.source.type === "camera" && element.readyState < 2)
+    )
+      return null;
+    canvasRef.current ||= document.createElement("canvas");
+    const canvas = canvasRef.current;
+    const scale = Math.min(1, 640 / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale)),
+      h = Math.max(1, Math.round(height * scale));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const token = generation.current;
+    const capturedAt = performance.now();
+    canvas
+      .getContext("2d", { willReadFrequently: true })
+      .drawImage(element, 0, 0, w, h);
+    const result = await detector.detect(canvas, current.settings.threshold);
+    return { ...result, capturedAt, token };
+  }
+  function receive(result) {
+    if (!alive.current || result.token !== generation.current) return;
+    const { source: currentSource, settings: currentSettings } = state.current;
+    if (
+      currentSource.type === "camera" &&
+      !isFreshFrame(result.capturedAt, performance.now())
+    ) {
+      setFrame(null);
+      setCue({
+        title: "Detection is catching up.",
+        detail: "Hold still. Do not rely on delayed results.",
+      });
+      return;
+    }
+    setFrame(result);
+    setError("");
+    const guidance = getGuidance(result.detections);
+    const confirmed =
+      currentSource.type === "photo"
+        ? guidance
+        : filter.current.update(guidance);
+    if (confirmed || !guidance.alert) {
+      setCue(guidance);
+      if (currentSettings.speech && confirmed?.alert)
+        narratorRef.current.say(confirmed.alert, {
+          rate: currentSettings.rate,
+        });
+    }
+    if (currentSource.type === "photo") loopRef.current.stop();
+  }
+  function togglePause() {
+    narratorRef.current.stop();
+    filter.current.reset();
+    setFrame(null);
+    setError("");
+    setPaused((current) => !current);
+    setCue(
+      paused
+        ? { title: "Checking view…", detail: "Hold your phone steady." }
+        : { title: "Detection paused.", detail: "No current object alerts." },
+    );
+  }
+  function toggleSpeech() {
+    if (settings.speech) narratorRef.current.stop();
+    else
+      narratorRef.current.say(
+        { key: "voice-on", speech: "Voice alerts on.", level: "status" },
+        { manual: true, rate: settings.rate },
+      );
+    update("speech", !settings.speech);
+  }
+  function upload(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -308,426 +478,299 @@ function App() {
         file.type,
       )
     ) {
-      setError(
-        "Choose a JPG, PNG, WebP, or AVIF image. Convert HEIC photos to JPG first.",
-      );
+      setError("Choose a JPG, PNG, WebP, or AVIF photo.");
       return;
     }
     if (file.size > 15 * 1024 * 1024) {
-      setError("Choose an image under 15 MB.");
+      setError("Choose a photo under 15 MB.");
       return;
     }
-    selectImage({
-      type: "upload",
-      url: URL.createObjectURL(file),
-      name: file.name,
-    });
+    showPhoto(URL.createObjectURL(file), file.name);
   }
-  const readyToScan = source.type !== "camera" || cameraReady;
+  const activeCamera = source.type === "camera";
+  const status = pending
+    ? "Opening camera"
+    : modelLoading
+      ? "Loading detector…"
+      : modelError
+        ? "Detector unavailable"
+        : activeCamera
+          ? paused || modal
+            ? "Detection paused"
+            : frame
+              ? "Live detection"
+              : "Starting detection"
+          : source.type === "photo"
+            ? "Photo mode"
+            : "Camera off";
+  const sectors = new Set(
+    (frame?.detections || [])
+      .map((item) => getGuidance([item]).alert?.position)
+      .filter(Boolean),
+  );
+
   return (
-    <div
-      className={`app ${settings.contrast ? "high-contrast" : ""} ${settings.largeText ? "large-text" : ""}`}
-    >
-      <a className="skip-link" href="#workspace">
-        Skip to scanner
-      </a>
-      <header className="header shell">
-        <a className="brand" href="#" aria-label="Lantern home">
+    <main className={`app ${settings.largeText ? "large-text" : ""}`}>
+      <header>
+        <a
+          className="brand"
+          href="#"
+          onClick={(event) => event.preventDefault()}
+        >
           <img src="/lantern.svg" alt="" />
-          lantern<span className="beta">DEMO</span>
+          Lantern
         </a>
-        <nav aria-label="Main navigation">
-          <button className="nav-button" onClick={() => setModal("help")}>
-            How it works
+        <span className="header-label">Live object alerts</span>
+        <button
+          className="icon-button"
+          aria-label="Settings"
+          onClick={() => setModal("settings")}
+        >
+          <Icon name="settings" />
+        </button>
+      </header>
+      <section className="camera-area" aria-label="Camera and object detection">
+        <div className="camera-status" role="status">
+          <span
+            className={
+              activeCamera && !paused && frame
+                ? "status-dot live"
+                : "status-dot"
+            }
+          />
+          {status}
+          {activeCamera && (
+            <button className="stop-button" onClick={stopCamera}>
+              Stop camera
+            </button>
+          )}
+        </div>
+        <div className="view">
+          {activeCamera ? (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              aria-label="Live camera preview"
+              onClick={() => videoRef.current?.play()}
+              onLoadedData={() => {
+                setSize({
+                  width: videoRef.current.videoWidth,
+                  height: videoRef.current.videoHeight,
+                });
+                setMediaReady(true);
+              }}
+              onError={() => {
+                loopRef.current.stop();
+                setFrame(null);
+                setError(
+                  "Camera preview stopped. Stop and restart the camera.",
+                );
+              }}
+            />
+          ) : source.type === "photo" ? (
+            <img
+              key={source.id}
+              ref={imageRef}
+              src={source.url}
+              alt="Selected still image for object detection"
+              onLoad={(event) => {
+                setSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                });
+                setMediaReady(true);
+              }}
+              onError={() =>
+                setError(
+                  "This photo could not be opened. Choose another image.",
+                )
+              }
+            />
+          ) : (
+            <div className="empty-view">
+              <Icon name="camera" size={44} />
+              <h1>Live camera</h1>
+              <p>
+                Use your rear camera for short
+                <br />
+                object alerts as the view changes.
+              </p>
+              <button
+                className="start-button"
+                disabled={pending}
+                onClick={() => startCamera()}
+              >
+                {pending ? "Opening camera…" : "Start camera"}
+              </button>
+              {pending && (
+                <button className="cancel-button" onClick={stopCamera}>
+                  Cancel
+                </button>
+              )}
+            </div>
+          )}
+          <Boxes
+            frame={frame}
+            size={frame ? { width: frame.width, height: frame.height } : size}
+          />
+          {activeCamera && !mediaReady && (
+            <p className="view-message">Starting preview…</p>
+          )}
+          {source.type === "photo" && (
+            <span className="photo-label">STILL PHOTO · NOT LIVE</span>
+          )}
+          {(paused || modal) && activeCamera && (
+            <div className="paused-label">Detection paused</div>
+          )}
+        </div>
+        <div className="positions" aria-label="Object positions in camera view">
+          {["left", "ahead", "right"].map((position) => (
+            <span
+              key={position}
+              className={sectors.has(position) ? "occupied" : ""}
+            >
+              {position}
+              <span aria-hidden="true">
+                {sectors.has(position) ? "●" : "—"}
+              </span>
+            </span>
+          ))}
+        </div>
+      </section>
+      <section className="feedback" aria-label="Current object alert">
+        <div className="cue" aria-live="polite" aria-atomic="true">
+          <h2>{cue.title}</h2>
+          <p>{cue.detail}</p>
+        </div>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        {modelError && (
+          <button
+            className="retry-button"
+            onClick={() => {
+              setError("");
+              prepareModel();
+            }}
+          >
+            Retry detector
+          </button>
+        )}
+        <div className="controls">
+          {activeCamera ? (
+            <>
+              <button
+                className="control"
+                aria-label={paused ? "Resume detection" : "Pause detection"}
+                onClick={togglePause}
+                disabled={!mediaReady || !modelReady}
+              >
+                <Icon name={paused ? "play" : "pause"} />
+                <span>{paused ? "Resume" : "Pause"}</span>
+              </button>
+              <button
+                className="control"
+                onClick={() =>
+                  startCamera(
+                    facing.current === "environment" ? "user" : "environment",
+                  )
+                }
+                disabled={pending}
+                aria-label="Switch camera"
+              >
+                <Icon name="flip" />
+                <span>Switch</span>
+              </button>
+            </>
+          ) : source.type === "photo" ? (
+            <button className="control" onClick={() => startCamera()}>
+              <Icon name="camera" />
+              <span>Go live</span>
+            </button>
+          ) : null}
+          <button
+            className="control"
+            disabled={!speechAvailable}
+            aria-label={
+              settings.speech ? "Mute voice alerts" : "Enable voice alerts"
+            }
+            aria-pressed={settings.speech}
+            onClick={toggleSpeech}
+          >
+            <Icon
+              name={settings.speech && speechAvailable ? "sound" : "muted"}
+            />
+            <span>
+              {speechAvailable
+                ? settings.speech
+                  ? "Voice on"
+                  : "Voice off"
+                : "No voice"}
+            </span>
           </button>
           <button
-            className="nav-button"
-            aria-label="Settings"
-            onClick={() => setModal("settings")}
+            className="control"
+            disabled={
+              !cue.alert || !settings.speech || !speechAvailable || paused
+            }
+            onClick={() =>
+              narratorRef.current.say(cue.alert, {
+                manual: true,
+                rate: settings.rate,
+              })
+            }
+            aria-label="Repeat current alert"
           >
-            <Icon name="settings" />
-            <span>Settings</span>
+            <Icon name="play" />
+            <span>Repeat</span>
           </button>
-          <a
-            className="source-link"
-            href="https://github.com/CodedMed/Lantern"
-            target="_blank"
-            rel="noreferrer"
-          >
-            GitHub ↗
-          </a>
-        </nav>
-      </header>
-      <main className="shell">
-        <section className="intro">
-          <div>
-            <p className="eyebrow">
-              <span className="dot" /> A NEW PERSPECTIVE, IN YOUR POCKET
-            </p>
-            <h1>
-              See a little
-              <br />
-              <em>differently.</em>
-            </h1>
-          </div>
-          <div className="intro-copy">
-            <p>
-              Turn the things around you into words.
-              <br />
-              Point your camera, take a breath, and listen.
-            </p>
-            <span className="privacy">
-              <Icon name="shield" size={16} /> Images stay on your device
-            </span>
-          </div>
-        </section>
-        <section
-          className="workspace"
-          id="workspace"
-          aria-label="Object recognition scanner"
-        >
-          <div className="viewer-card">
-            <div className="viewer-top">
-              <span>
-                <span
-                  className={`dot ${source.type === "camera" ? "live" : ""}`}
-                />
-                {source.type === "camera"
-                  ? "LIVE CAMERA"
-                  : source.type === "sample"
-                    ? "SAMPLE SCENE"
-                    : "YOUR PHOTO"}
-              </span>
-              <span>ON-DEVICE VISION</span>
-            </div>
-            <div
-              className="viewport"
-              style={{
-                aspectRatio: `${dimensions.width} / ${dimensions.height}`,
-              }}
-            >
-              {source.type === "camera" ? (
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  aria-label="Live camera preview"
-                  onClick={() => videoRef.current?.play()}
-                  onLoadedData={() => {
-                    setDimensions({
-                      width: videoRef.current.videoWidth,
-                      height: videoRef.current.videoHeight,
-                    });
-                    setCameraReady(true);
-                    setStatus("Camera ready. Tap Scan scene.");
-                  }}
-                />
-              ) : (
-                <img
-                  ref={imageRef}
-                  src={source.url}
-                  alt={
-                    source.type === "sample"
-                      ? "People flying kites on a beach, from the TensorFlow.js model demo"
-                      : "Your selected image for local object recognition"
-                  }
-                  onLoad={(event) =>
-                    setDimensions({
-                      width: event.currentTarget.naturalWidth,
-                      height: event.currentTarget.naturalHeight,
-                    })
-                  }
-                  onError={() =>
-                    setError(
-                      "This image could not be opened. Choose another JPG or PNG.",
-                    )
-                  }
-                />
-              )}
-              {result?.objects.map((object, index) => (
-                <div
-                  key={index}
-                  className="box"
-                  style={{
-                    left: `${object.bbox[1] * 100}%`,
-                    top: `${object.bbox[0] * 100}%`,
-                    width: `${(object.bbox[3] - object.bbox[1]) * 100}%`,
-                    height: `${(object.bbox[2] - object.bbox[0]) * 100}%`,
-                    "--box-color": COLORS[index % COLORS.length],
-                  }}
-                >
-                  <span>
-                    {object.class} · {Math.round(object.score * 100)}%
-                  </span>
-                </div>
-              ))}
-              {busy && (
-                <div className="scanning" aria-hidden="true">
-                  <div className="scan-line" />
-                  <span>
-                    <span className="spinner" /> Looking a little closer
-                  </span>
-                </div>
-              )}
-              {!result && !busy && source.type === "sample" && (
-                <div className="image-caption">
-                  Real image. Real detection. Give it a try.
-                </div>
-              )}
-            </div>
-            <div className="viewer-bottom">
-              <span>{source.name}</span>
-              {source.type === "camera" ? (
-                <button className="text-button" onClick={stopCamera}>
-                  Stop camera
-                </button>
-              ) : (
-                <span>No camera permission needed</span>
-              )}
-            </div>
-          </div>
-          <aside className="insight-card" aria-label="Scene description">
-            <p className="eyebrow">THE WORLD, IN WORDS</p>
-            <div className="status" role="status" aria-live="polite">
-              <span className={busy ? "spinner" : "dot"} />
-              {status}
-            </div>
-            <div className="description">
-              <h2>
-                {result
-                  ? result.objects.length
-                    ? `${result.objects.length} object${result.objects.length === 1 ? "" : "s"} recognized.`
-                    : "A little uncertain."
-                  : "What’s around you?"}
-              </h2>
-              <p>
-                {result
-                  ? result.message
-                  : "Try the sample scene, upload a photo, or open your camera. Lantern will describe the objects it recognizes."}
-              </p>
-            </div>
-            {error && (
-              <p className="error" role="alert">
-                {error}
-              </p>
-            )}
-            <button
-              className="button primary"
-              disabled={busy || cameraPending || !readyToScan}
-              onClick={scan}
-            >
-              <Icon
-                name={
-                  source.type === "sample" && !result ? "sparkle" : "camera"
-                }
-              />
-              {busy
-                ? "Recognizing…"
-                : source.type === "sample" && !result
-                  ? "Try the demo"
-                  : "Scan scene"}
-              {!busy && <Icon name="arrow" />}
-            </button>
-            <div className="input-actions">
-              <button
-                className="button secondary"
-                disabled={busy || cameraPending}
-                onClick={source.type === "camera" ? stopCamera : startCamera}
-              >
-                <Icon name="camera" />
-                {cameraPending
-                  ? "Opening…"
-                  : source.type === "camera"
-                    ? "Stop camera"
-                    : "Use camera"}
-              </button>
-              <button
-                className="button secondary"
-                disabled={busy || cameraPending}
-                onClick={() => fileRef.current?.click()}
-              >
-                <Icon name="upload" />
-                Upload photo
-              </button>
-              <input
-                className="visually-hidden"
-                type="file"
-                ref={fileRef}
-                accept="image/jpeg,image/png,image/webp,image/avif"
-                onChange={onUpload}
-                tabIndex={-1}
-                aria-label="Choose a photo"
-              />
-            </div>
-            {source.type !== "sample" && (
-              <button
-                className="text-button"
-                disabled={busy}
-                onClick={() =>
-                  selectImage({
-                    type: "sample",
-                    url: SAMPLE,
-                    name: "Sample scene",
-                  })
-                }
-              >
-                Use sample scene instead
-              </button>
-            )}
-            <div className="speech-controls">
-              <button
-                className="text-button"
-                aria-pressed={settings.speech}
-                disabled={!speechAvailable}
-                onClick={() => update("speech", !settings.speech)}
-              >
-                <Icon name="sound" size={17} />
-                {!speechAvailable
-                  ? "Speech unavailable"
-                  : settings.speech
-                    ? "Spoken descriptions on"
-                    : "Spoken descriptions off"}
-              </button>
-              {result && settings.speech && speechAvailable && (
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    speaking ? stopSpeech() : speak(result.speech)
-                  }
-                >
-                  {speaking ? "Stop speech" : "Read again"}
-                </button>
-              )}
-            </div>
-            {source.type === "camera" && (
-              <label className="toggle-row">
-                <span>
-                  Auto-scan <small>One scan at a time</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={auto}
-                  onChange={(event) => {
-                    setAuto(event.target.checked);
-                    if (!event.target.checked) stopSpeech();
-                  }}
-                />
-              </label>
-            )}
-          </aside>
-        </section>
-        {result && (
-          <section className="results" aria-labelledby="objects-title">
-            <div className="results-heading">
-              <h2 id="objects-title">In this frame</h2>
-              <span>
-                {result.elapsed.toLocaleString()} ms inference ·{" "}
-                {result.backend === "webgl" ? "GPU" : "CPU"} · COCO-SSD
-              </span>
-            </div>
-            <div className="object-list">
-              {result.objects.length ? (
-                result.objects.map((object, index) => (
-                  <div className="object-row" key={index}>
-                    <span
-                      className="object-number"
-                      style={{ color: COLORS[index % COLORS.length] }}
-                    >
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <strong>{object.class}</strong>
-                    <span>{object.position}</span>
-                    <span>{Math.round(object.score * 100)}% confidence</span>
-                  </div>
-                ))
-              ) : (
-                <p>
-                  No supported objects met the confidence threshold. Try better
-                  lighting or another angle.
-                </p>
-              )}
-            </div>
-            <p className="fine-print">
-              Confidence is the model’s score, not a guarantee of correctness.
-              Positions refer to the image, not your route.
-            </p>
-          </section>
-        )}
-        <section className="features" aria-label="About Lantern">
-          <article>
-            <span className="feature-number">01 / LOOK</span>
-            <h3>Everyday awareness.</h3>
-            <p>
-              Recognize people, pets, furniture, and other common objects in a
-              single frame.
-            </p>
-          </article>
-          <article>
-            <span className="feature-number">02 / LISTEN</span>
-            <h3>A voice for your view.</h3>
-            <p>
-              Hear object names and image positions. Adjust speech speed,
-              contrast, and text size.
-            </p>
-          </article>
-          <article>
-            <span className="feature-number">03 / STAY PRIVATE</span>
-            <h3>Your view stays yours.</h3>
-            <p>
-              Recognition runs in your browser. No account, image uploads, or
-              API key required.
-            </p>
-          </article>
-        </section>
-        <p className="safety">
-          <strong>A little awareness. Not a safety guarantee.</strong>{" "}
-          {SAFETY_NOTE}
+        </div>
+      </section>
+      <footer>
+        <div className="secondary-actions">
+          <button onClick={() => showPhoto("/sample-scene.jpg", "Demo photo")}>
+            Demo photo
+          </button>
+          <button onClick={() => fileRef.current?.click()}>Upload photo</button>
+          <button onClick={() => setModal("about")}>About</button>
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          className="visually-hidden"
+          accept="image/jpeg,image/png,image/webp,image/avif"
+          aria-label="Choose photo"
+          tabIndex={-1}
+          onChange={upload}
+        />
+        <p>
+          Objects can be missed. No distance or safe-route detection.
+          <br />
+          Keep using your usual mobility aids. Do not use for road crossing.
         </p>
-      </main>
-      <footer className="shell footer">
-        <span>lantern / built with a brighter perspective</span>
-        <a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noreferrer">
-          Model & image credits ↗
-        </a>
       </footer>
       {modal && (
-        <dialog
-          ref={dialogRef}
-          className="modal"
-          onCancel={() => setModal(null)}
+        <Dialog
+          title={modal === "settings" ? "Settings" : "About Lantern"}
           onClose={() => setModal(null)}
-          onClick={(event) => {
-            if (event.target === dialogRef.current) setModal(null);
-          }}
         >
-          <div className="modal-header">
-            <h2>
-              {modal === "settings"
-                ? "Make it yours."
-                : "A clearer way to try Lantern."}
-            </h2>
-            <button
-              className="icon-button"
-              aria-label="Close dialog"
-              onClick={() => setModal(null)}
-            >
-              <Icon name="close" />
-            </button>
-          </div>
           {modal === "settings" ? (
-            <div className="settings-content">
-              <label className="toggle-row">
-                <span>Spoken descriptions</span>
+            <>
+              <label className="setting">
+                Voice alerts
                 <input
                   type="checkbox"
                   checked={settings.speech}
                   disabled={!speechAvailable}
-                  onChange={(event) => update("speech", event.target.checked)}
+                  onChange={toggleSpeech}
                 />
               </label>
-              <label className="range-row">
-                Speech speed <output>{settings.rate.toFixed(2)}×</output>
+              <label className="setting range-setting">
+                Voice speed <output>{settings.rate.toFixed(2)}×</output>
                 <input
                   type="range"
                   min="0.6"
@@ -740,26 +783,19 @@ function App() {
                 />
               </label>
               <button
-                className="button secondary"
+                className="test-voice"
                 disabled={!settings.speech || !speechAvailable}
                 onClick={() =>
-                  speak(
-                    "Hello from Lantern. This is your spoken description speed.",
+                  narratorRef.current.say(
+                    { key: "test", speech: "Chair ahead.", level: "status" },
+                    { manual: true, rate: settings.rate },
                   )
                 }
               >
-                Test voice
+                Test short alert
               </button>
-              <label className="toggle-row">
-                <span>High contrast</span>
-                <input
-                  type="checkbox"
-                  checked={settings.contrast}
-                  onChange={(event) => update("contrast", event.target.checked)}
-                />
-              </label>
-              <label className="toggle-row">
-                <span>Larger text</span>
+              <label className="setting">
+                Larger text
                 <input
                   type="checkbox"
                   checked={settings.largeText}
@@ -768,7 +804,7 @@ function App() {
                   }
                 />
               </label>
-              <label className="range-row">
+              <label className="setting range-setting">
                 Detection threshold{" "}
                 <output>{Math.round(settings.threshold * 100)}%</output>
                 <input
@@ -782,53 +818,69 @@ function App() {
                   }
                 />
               </label>
-              <p className="fine-print">
-                Higher thresholds hide uncertain detections, but may miss more
-                objects. Settings save in this browser. Rescan to apply a new
-                threshold.
+              <p className="note">
+                Higher thresholds hide uncertain detections but can miss more
+                objects. Preferences save on this device.
               </p>
-            </div>
+            </>
           ) : (
-            <div className="help-content">
-              <ol>
-                <li>
-                  <strong>Try the demo.</strong> The bundled sample runs through
-                  the same real model as your photos. Initial model download can
-                  take a moment.
-                </li>
-                <li>
-                  <strong>Bring your own view.</strong> Open the camera over
-                  HTTPS or upload a JPG, PNG, WebP, or AVIF. Nothing is sent to
-                  a recognition server.
-                </li>
-                <li>
-                  <strong>Listen and explore.</strong> Scan again, replay the
-                  spoken description, or enable auto-scan with the camera. Use
-                  Settings for larger text and higher contrast.
-                </li>
-              </ol>
-              <h3>What it can—and can’t—do</h3>
+            <div className="about">
               <p>
-                Lantern uses the pretrained COCO-SSD / Lite MobileNet V2 model
-                with 80 supported object categories. It is not a custom-trained
-                YOLO model. It does not read signs, estimate reliable distance,
-                or find a safe walking route.
+                Start the camera and hold your phone steady. Object detection
+                runs continuously, with one frame in progress at a time. Pause
+                stops detection; Stop camera releases the camera.
               </p>
               <p>
-                Model files download from Google’s public model hosting. Browser
-                speech uses your device’s speech service, which may depend on
-                the operating system or selected voice. Camera frames and
-                uploaded photos are not stored by Lantern.
+                Alerts are brief: “Chair ahead,” “Person on left,” or “Chair
+                ahead. Pause.” An object filling the center may trigger a pause
+                cue, but image size is not distance. Left/right labels refer to
+                the camera image, including the unmirrored front camera.
               </p>
-              <p className="safety">
-                {SAFETY_NOTE} Do not use this demo to cross roads or replace
-                established mobility aids.
+              <p>
+                Unchanged alerts are quiet. A persistent prominent central
+                object may repeat after 12 seconds. The app never says a side is
+                safe or tells you to step into an unverified path.
               </p>
+              <p>
+                This prototype recognizes 80 COCO object categories using
+                COCO-SSD. It misses hazards such as steps, holes, glass, and
+                objects outside its training categories. It cannot replace a
+                cane, guide dog, or other mobility support.
+              </p>
+              <p>
+                Recognition runs in this browser. Images are not uploaded. The
+                first use downloads model files; speed depends on your phone.
+                Device speech may require tapping Repeat or enabling Voice.
+                Switching apps turns the camera off.
+              </p>
+              <p>
+                <a
+                  href="https://github.com/CodedMed/Lantern"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Source code
+                </a>{" "}
+                ·{" "}
+                <a
+                  href="/THIRD_PARTY_NOTICES.txt"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Credits
+                </a>
+              </p>
+              {frame && (
+                <p className="note">
+                  Last inference: {frame.elapsed} ms · {frame.backend} · this is
+                  not total camera-to-alert latency.
+                </p>
+              )}
             </div>
           )}
-        </dialog>
+        </Dialog>
       )}
-    </div>
+    </main>
   );
 }
 
@@ -839,13 +891,10 @@ class ErrorBoundary extends React.Component {
   }
   render() {
     return this.state.failed ? (
-      <main className="shell">
-        <h1>Let’s try that again.</h1>
-        <p>
-          Lantern could not start in this browser. Reload, or try a current
-          version of Chrome or Safari.
-        </p>
-        <button onClick={() => window.location.reload()}>Reload Lantern</button>
+      <main className="fallback">
+        <h1>Lantern could not start.</h1>
+        <p>Reload or try a current version of Safari or Chrome.</p>
+        <button onClick={() => window.location.reload()}>Reload</button>
       </main>
     ) : (
       this.props.children

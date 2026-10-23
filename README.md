@@ -10,11 +10,15 @@ An accessibility-focused **object-awareness prototype**: point a camera at a sce
 
 The browser app lives in `web/`. It needs **no backend, database, account, .env file, or API key**. It is suitable for free static hosting and works on desktop and mobile browsers.
 
-1. Click **Try the demo** to run real recognition on the bundled sample scene. No camera permission is needed.
-2. Choose **Upload photo** (JPG, PNG, WebP, AVIF; up to 15 MB), or **Use camera** and allow camera access. Phone cameras require HTTPS; `localhost` is allowed for development.
-3. Click **Scan scene**. Results include actual model labels, confidence scores, left/center/right image positions, bounding boxes, and inference timing.
-4. Toggle spoken descriptions or click **Read again**. Some browsers require this explicit tap before allowing speech. Camera auto-scan performs one scan at a time and throttles repeated speech.
-5. **Settings** saves speech speed, speech on/off, contrast, text size, and recognition threshold in this browser.
+1. On your phone, tap **Start camera** and allow camera access. The rear camera is preferred. Recognition begins automatically; no repeated scan button presses are needed.
+2. Keep your phone steady. Boxes update continuously. Brief cues such as **“Person on left”** and **“Chair ahead. Pause.”** describe image positions, not verified safe routes.
+3. **Pause/Resume** controls recognition, **Switch** changes cameras, **Voice** mutes/enables alerts, and **Repeat** replays the current brief cue. **Stop camera** releases the camera. Switching apps also turns it off.
+4. Use **Demo photo** without camera permission, or **Upload photo** (JPG, PNG, WebP, AVIF; up to 15 MB). These are explicitly labeled still-photo modes, not live guidance.
+5. **Settings** saves speech speed, speech on/off, larger text, and detection threshold. The interface is phone-first, white/black/grayscale, without a marketing landing page.
+
+The live loop targets a 250 ms frame period (roughly four updates per second on capable devices), scheduling the next frame only after the previous inference completes. It never builds a queue. Camera frames are bounded to a 640-pixel longest edge; the model is reused. Slower phones run at a lower rate. Results older than 1.4 seconds are discarded and overlays expire rather than remaining on screen indefinitely.
+
+Ordinary object cues require two matching frames to reduce flicker. A prominent central object can trigger a brief pause cue immediately. Prominence is a **bounding-box heuristic, not measured depth or collision prediction**. It never recommends turning into an unverified side. Ordinary unchanged cues are silent; a persistent prominent warning can repeat after 12 seconds. Voice output does not queue scene descriptions or continually restart the same phrase. Device/browser speech may require tapping Repeat once.
 
 The first scan downloads TensorFlow.js and the pretrained model. Later scans reuse the same loaded model. Initial download time and inference speed depend on the network and device; the displayed timing measures **inference only**, not initial setup. The app uses WebGL where available and falls back to CPU if WebGL cannot initialize.
 
@@ -39,11 +43,14 @@ npm run preview --prefix web
 
 ```text
 web/                     React + Vite browser application (separate locked dependencies)
-  src/main.jsx           Camera, uploads, overlays, speech, accessible controls
+  src/main.jsx           Phone-first camera UI, uploads, overlays and controls
   src/detector.mjs       Lazy-loaded model, deduplicated initialization, scan lock
+  src/liveLoop.mjs       Backpressure, pause/cancel and frame freshness checks
+  src/narrator.mjs       Short cues, duplicate suppression, no speech queue
   public/                Licensed sample scene, icon, third-party notices
   tests/core.test.mjs    Shared logic, retry/concurrency, backend fallback tests
 utils/scene.mjs          Shared box normalization and conservative scene descriptions
+utils/guidance.mjs       Browser image-space object prioritization and brief cues
 utils/preferences.mjs    Shared validated preferences
 App.js, screens/         Existing Expo/React Native mobile app
 services/YOLODetector.js Native COCO-SSD wrapper; historical filename, NOT YOLO
@@ -51,7 +58,7 @@ services/YOLODetector.js Native COCO-SSD wrapper; historical filename, NOT YOLO
 
 Recognition uses **TensorFlow.js 4.22 / COCO-SSD 2.2.3, Lite MobileNet V2**, pretrained for 80 COCO categories. This project does not include custom-trained YOLO weights. Old design/training guides describe experiments or plans, not verified capabilities of the current demo. `config/modelConfig.js` and `services/OpenCVUtils.js` are legacy experiments and are not used by the current scanner.
 
-COCO boxes arrive as pixel `[x, y, width, height]`; the shared layer converts them to normalized `[ymin, xmin, ymax, xmax]`. Both clients use the same coordinate convention and object-awareness descriptions. No fabricated distance or "path clear" result is generated. Model confidence is not measured accuracy.
+COCO boxes arrive as pixel `[x, y, width, height]`; the shared layer converts them to normalized `[ymin, xmin, ymax, xmax]`. Both clients use the same coordinate convention. The web app adds short prioritized cues; native retains its separate scene-description UI. No fabricated distance or "path clear" result is generated. Model confidence is not measured accuracy.
 
 Photos and camera frames are processed locally, not uploaded or stored by Lantern. Static assets and model weights still require network requests; model files come from Google's public TensorFlow.js model hosting. Speech uses the browser/OS voice service, which may have its own network requirements. Preferences are stored locally; no analytics or camera recording is added.
 

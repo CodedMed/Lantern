@@ -1,5 +1,17 @@
 # Demo validation — October 22, 2026
 
+## Live camera revision
+
+- Replaced the 1.8-second inter-scan wait with a serialized loop targeting a
+  250 ms frame period. This is a scheduling target, **not a measured phone FPS**.
+- Added tests for frame backpressure, slow inference, cancellation during a scan,
+  rapid pause/resume, stale-result rejection, and browser timer receiver binding.
+- Added tests for image-space alert priority, two-frame cue stability, short
+  narration, duplicate suppression, no speech queues, mute, manual replay and
+  12-second prominent-object reminders.
+- Physical phone camera/voice checks remain necessary; no phone performance or
+  safe navigation capability is claimed by the automated tests.
+
 ## Automated
 
 - Clean `npm ci --prefix web`: successful, no dependency overrides needed.
