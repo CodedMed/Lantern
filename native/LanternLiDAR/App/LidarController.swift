@@ -195,9 +195,18 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         let floors = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter {
             $0.alignment == .horizontal && $0.classification == .floor
         }
-        // Test each point against a classified floor anchor's bounded rectangle,
+        // Test each point against a classified floor anchor's bounded polygon,
         // never a guessed camera height or an arbitrary horizontal tabletop.
-        let floorTransforms = floors.map { (simd_inverse($0.transform), $0.center, $0.extent) }
+        let floorPatches = floors.compactMap { anchor -> (simd_float4x4, Float, [SIMD2<Double>])? in
+            let geometry = anchor.geometry
+            guard geometry.boundaryVertexCount >= 3, geometry.boundaryVertexCount <= 512 else { return nil }
+            let boundary = (0..<geometry.boundaryVertexCount).map { index in
+                let v = geometry.boundaryVertices[index]
+                return SIMD2<Double>(Double(v.x), Double(v.z))
+            }
+            guard boundary.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+            return (simd_inverse(anchor.transform), anchor.center.y, boundary)
+        }
         var result: [Sector: SectorReading] = [:]
         for sector in Sector.allCases {
             var cells: [DepthCell] = []
@@ -223,11 +232,10 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
                     }
                     let p = SIMD4<Float>(Float(point.x), Float(point.y), Float(point.z), 1)
                     let world = frame.camera.transform * p
-                    let isFloor = floorTransforms.contains { inverse, center, extent in
+                    let isFloor = floorPatches.contains { inverse, floorY, boundary in
                         let local = inverse * world
-                        return abs(local.y - center.y) < 0.08 && extent.x > 0 && extent.z > 0
-                            && abs(local.x - center.x) < extent.x / 2
-                            && abs(local.z - center.z) < extent.z / 2
+                        return abs(local.y - floorY) < 0.08
+                            && FloorBoundary.contains(SIMD2(Double(local.x), Double(local.z)), vertices: boundary)
                     }
                     // Convert the unprojected point to slant range rather than
                     // treating off-axis camera-Z depth as Euclidean distance.
@@ -237,7 +245,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
             }
             result[sector] = DepthAnalysis.analyze(cells)
         }
-        return (result, !floors.isEmpty)
+        return (result, !floorPatches.isEmpty)
     }
 
     func sessionWasInterrupted(_ session: ARSession) {

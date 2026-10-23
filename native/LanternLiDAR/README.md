@@ -44,7 +44,7 @@ Render website. The existing web app and legacy Expo app are preserved.
 - Uses a three-reading median, bypassing old history for a substantially closer
   new surface. Readings expire after 0.5 seconds; uncertain/missing frames remove
   distances immediately. Frames predating the latest Start are rejected.
-- Excludes points near **classified, bounded floor anchors**, not a guessed
+- Excludes points near **classified floor boundary polygons**, not a bounding box, a guessed
   floor height or every horizontal table. Before floor classification, ground
   may be included in readings; side-selection suggestions are withheld.
 - Gives short **pause/check** cues, never a verified safe walking route. iOS

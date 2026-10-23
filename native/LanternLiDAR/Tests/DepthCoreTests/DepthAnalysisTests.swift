@@ -134,4 +134,17 @@ final class DepthAnalysisTests: XCTestCase {
         XCTAssertNil(DepthProjection.cameraPoint(imageX: 320, imageY: 240, depth: .nan, fx: 500, fy: 500, cx: 320, cy: 240))
         XCTAssertNil(DepthProjection.cameraPoint(imageX: 320, imageY: 240, depth: 2, fx: 0, fy: 500, cx: 320, cy: 240))
     }
+    func testFloorPolygonDoesNotMaskBoundingBoxCornersOutsideRotatedFloor() {
+        let diamond: [SIMD2<Double>] = [SIMD2(0, -1), SIMD2(1, 0), SIMD2(0, 1), SIMD2(-1, 0)]
+        XCTAssertTrue(FloorBoundary.contains(SIMD2(0, 0), vertices: diamond))
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(0.9, 0.9), vertices: diamond))
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(2, 0), vertices: diamond))
+        XCTAssertTrue(FloorBoundary.contains(SIMD2(0, 0), vertices: Array(diamond.reversed())))
+    }
+    func testInvalidFloorBoundariesCannotSuppressGeometry() {
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(0, 0), vertices: []))
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(0, 0), vertices: [SIMD2(0, 0), SIMD2(1, 0)]))
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(0, 0), vertices: [SIMD2(.nan, 0), SIMD2(1, 1), SIMD2(0, 1)]))
+        XCTAssertFalse(FloorBoundary.contains(SIMD2(.infinity, 0), vertices: [SIMD2(0, 0), SIMD2(1, 1), SIMD2(0, 1)]))
+    }
 }
