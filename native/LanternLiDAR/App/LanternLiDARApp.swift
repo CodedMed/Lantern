@@ -44,11 +44,15 @@ private struct LidarScreen: View {
                     ForEach(Sector.allCases, id: \.self) { sector in
                         VStack(spacing: 8) {
                             Text(sector.rawValue.capitalized).font(.caption)
-                            Text(sensor.readings[sector]?.label ?? "Unknown").font(.headline).minimumScaleFactor(0.7)
-                            Text("Nearest supported surface").font(.caption2).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity).padding(.vertical, 12).overlay(Rectangle().stroke(.gray.opacity(0.3)))
+                            Text(sensor.running ? (sensor.readings[sector]?.label ?? "Unknown") : "—").font(.headline).minimumScaleFactor(0.7)
+                            Text(sensor.running ? (sensor.readings[sector]?.explanation ?? "Waiting for fresh depth") : "Camera off")
+                                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }.frame(maxWidth: .infinity, alignment: .top).padding(8).frame(maxHeight: .infinity, alignment: .top)
+                            .overlay(Rectangle().stroke(.gray.opacity(0.3)))
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("distance-\(sector.rawValue)")
                     }
-                }.accessibilityElement(children: .combine)
+                }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
                 Text(sensor.running ? sensor.cue.title : "Camera off").font(.title2.bold())
                 Text(sensor.running ? sensor.cue.detail : "Point at your surroundings. Measurements come from ARKit's LiDAR depth feed, not assumed object sizes.")
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -59,6 +63,13 @@ private struct LidarScreen: View {
                     Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running)
                 }.controlSize(.large).tint(.black)
                 Toggle("Short voice alerts", isOn: $sensor.voiceEnabled).tint(.black)
+                DisclosureGroup("How to read the distances") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Left, Ahead, and Right match the three boxes in the camera view. Hold the phone upright and aim forward while stationary.")
+                        Text("Meters describe the nearest supported surface patch, not an identified object or a guaranteed free path. The sample percentage is depth coverage, not an accuracy score.")
+                        Text("Unknown is intentional when depth is uncertain, outside the 0.2–4.5 m software window, or only classified floor is sampled. Re-aim slowly at an opaque nearby wall or furniture; never assume Unknown means clear.")
+                    }.font(.caption).padding(.top, 8)
+                }
                 Text("No API key, recording, upload, or distance calibration. Sensor data stays on this device.").font(.caption)
                 Text("Experimental surface awareness, not navigation or collision avoidance. Glass, dark/reflective surfaces, thin hazards, steps and drop-offs can be missed. Unknown is not clear. Keep using established mobility aids. Never use for road crossing.")
                     .font(.caption).foregroundStyle(.secondary)

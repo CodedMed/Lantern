@@ -24,18 +24,37 @@ public struct DepthCell: Sendable {
     public static let unknown = DepthCell(meters: .nan, confidence: 0)
 }
 
+public enum DepthIssue: String, Equatable, Sendable {
+    case unavailable, lowConfidence, outsideRange, floorOnly, noSurface
+
+    public var explanation: String {
+        switch self {
+        case .unavailable: return "Waiting for fresh depth"
+        case .lowConfidence: return "Not enough confident depth. Hold steady."
+        case .outsideRange: return "Depth outside the 0.2–4.5 m software window"
+        case .floorOnly: return "Only classified floor sampled. Aim forward."
+        case .noSurface: return "No supported surface patch. Re-aim slowly."
+        }
+    }
+}
+
 public struct SectorReading: Equatable, Sendable {
     public let meters: Double?
     public let coverage: Double
-    public init(meters: Double?, coverage: Double) {
+    public let issue: DepthIssue?
+    public init(meters: Double?, coverage: Double, issue: DepthIssue = .unavailable) {
         self.coverage = coverage.isFinite ? min(1, max(0, coverage)) : 0
         if let meters, meters.isFinite, DepthAnalysis.supportedRange.contains(meters), self.coverage >= 0.35 {
             self.meters = meters
-        } else { self.meters = nil }
+            self.issue = nil
+        } else { self.meters = nil; self.issue = issue }
     }
     public static let unknown = SectorReading(meters: nil, coverage: 0)
     public var label: String {
         meters.map { String(format: "About %.1f m", $0) } ?? "Unknown"
+    }
+    public var explanation: String {
+        issue?.explanation ?? "\(Int((coverage * 100).rounded()))% in-range, high-confidence samples"
     }
 }
 
@@ -58,7 +77,16 @@ public enum DepthAnalysis {
               cells.count == columns * rows else { return .unknown }
         let valid = cells.map { $0.confidence == 2 && $0.meters.isFinite && supportedRange.contains($0.meters) }
         let coverage = Double(valid.filter { $0 }.count) / Double(cells.count)
-        guard coverage >= 0.35 else { return SectorReading(meters: nil, coverage: coverage) }
+        guard coverage >= 0.35 else {
+            let outside = cells.filter {
+                $0.confidence == 2 && $0.meters.isFinite && $0.meters > 0 && !supportedRange.contains($0.meters)
+            }.count
+            let issue: DepthIssue = Double(outside) / Double(cells.count) >= 0.35 ? .outsideRange : .lowConfidence
+            return SectorReading(meters: nil, coverage: coverage, issue: issue)
+        }
+        if cells.indices.allSatisfy({ !valid[$0] || cells[$0].isKnownFloor }) {
+            return SectorReading(meters: nil, coverage: coverage, issue: .floorOnly)
+        }
         var visited = Set<Int>()
         var patches: [Double] = []
         for start in cells.indices where valid[start] && !cells[start].isKnownFloor && !visited.contains(start) {
@@ -83,7 +111,7 @@ public enum DepthAnalysis {
                 patches.append(patch[Int(Double(patch.count - 1) * 0.2)])
             }
         }
-        return SectorReading(meters: patches.min(), coverage: coverage)
+        return SectorReading(meters: patches.min(), coverage: coverage, issue: .noSurface)
     }
 }
 
@@ -105,7 +133,7 @@ public struct DepthSmoother {
             let reading = input[sector] ?? .unknown
             guard let value = reading.meters, value.isFinite, DepthAnalysis.supportedRange.contains(value) else {
                 history[sector] = []
-                result[sector] = SectorReading(meters: nil, coverage: reading.coverage)
+                result[sector] = SectorReading(meters: nil, coverage: reading.coverage, issue: reading.issue ?? .unavailable)
                 continue
             }
             var values = history[sector] ?? []
@@ -130,6 +158,31 @@ public struct DepthCue: Equatable, Sendable {
     public let speech: String
     public let key: String
     public let urgent: Bool
+}
+
+/// Speech scheduling only, not a safety guarantee. Visual unknown state is
+/// immediate; new warnings may interrupt routine speech rather than queue.
+public struct DepthSpeechPolicy {
+    private var lastKey: String?
+    private var lastTime = -Double.infinity
+    public init() {}
+    public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false) -> Bool {
+        guard now.isFinite, now >= lastTime else { return false }
+        if !manual {
+            let elapsed = now - lastTime
+            if cue.key == lastKey {
+                guard cue.urgent, elapsed >= 10, !speaking else { return false }
+            } else if cue.urgent {
+                // Bound chatter if confidence or scene changes rapidly.
+                guard elapsed >= 1 else { return false }
+            } else {
+                guard elapsed >= 3, !speaking else { return false }
+            }
+        }
+        lastKey = cue.key
+        lastTime = now
+        return true
+    }
 }
 
 public enum DepthGuidance {

@@ -48,7 +48,17 @@ Render website. The existing web app and legacy Expo app are preserved.
   floor height or every horizontal table. Before floor classification, ground
   may be included in readings; side-selection suggestions are withheld.
 - Gives short **pause/check** cues, never a verified safe walking route. iOS
-  speech is throttled and not queued. No paid voice API is needed.
+  speech is throttled and not queued. A new warning can replace routine speech
+  (at most once a second); loss of a previously measured distance cancels old
+  speech immediately. Repeated missing frames do not cut that warning off.
+  No paid voice API is needed.
+
+Each region explains missing meters: insufficient confident depth, outside the
+software range window, only classified floor sampled, or no supported surface
+patch. Unknown still clears the old number immediately; no lowered confidence
+threshold, invented distance, or stale-number grace period is used. The displayed
+sample percentage describes in-range, high-confidence grid coverage, **not sensor
+accuracy**. The in-app help explains positioning and these limits.
 
 Leaving and returning reads new depth. There is no chair identity, stored chair
 size, runtime distance calibration, or manual same-chair confirmation.
@@ -94,6 +104,13 @@ floor masking, stale/out-of-order frames, loss/return, closer surfaces, smoothin
 unprojection and conservative cues. They do not establish sensor accuracy.
 
 ## Physical-device acceptance checklist
+
+Initial iPhone 15 Pro Max smoke test: installed and launched using Personal Team
+signing; the user reported wall distances decreasing as the phone moved closer,
+with intermittent Unknown readings. This confirms a basic live-depth interaction,
+**not measured accuracy, comprehensive acceptance, or safe navigation**. The
+checklist below still needs systematic physical testing; automated tests cannot
+replace it.
 
 While stationary (with a sighted helper if needed):
 

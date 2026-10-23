@@ -147,4 +147,95 @@ final class DepthAnalysisTests: XCTestCase {
         XCTAssertFalse(FloorBoundary.contains(SIMD2(0, 0), vertices: [SIMD2(.nan, 0), SIMD2(1, 1), SIMD2(0, 1)]))
         XCTAssertFalse(FloorBoundary.contains(SIMD2(.infinity, 0), vertices: [SIMD2(0, 0), SIMD2(1, 1), SIMD2(0, 1)]))
     }
+
+    func testUnknownReasonsDoNotRelaxConfidenceOrRange() {
+        let low = DepthAnalysis.analyze(grid(1.4, confidence: 1))
+        XCTAssertNil(low.meters)
+        XCTAssertEqual(low.issue, .lowConfidence)
+        for meters in [0.1, 7.0] {
+            let outside = DepthAnalysis.analyze(grid(meters))
+            XCTAssertNil(outside.meters)
+            XCTAssertEqual(outside.issue, .outsideRange)
+        }
+        XCTAssertEqual(DepthAnalysis.analyze(grid(1.4)).issue, nil)
+    }
+
+    func testFloorOnlyExplainsWhyMetersAreMissingWithoutClaimingClearance() {
+        let result = DepthAnalysis.analyze(grid(1, floor: true))
+        XCTAssertNil(result.meters)
+        XCTAssertEqual(result.issue, .floorOnly)
+        XCTAssertTrue(result.explanation.contains("Aim forward"))
+        XCTAssertEqual(DepthGuidance.cue([.ahead: result], floorKnown: true).key, "unknown")
+    }
+
+    func testTooSmallObstacleIsNotMisreportedAsFloorOnly() {
+        var cells = grid(1, floor: true)
+        for i in [44, 45, 46, 54, 55] { cells[i] = DepthCell(meters: 0.8, confidence: 2) }
+        let result = DepthAnalysis.analyze(cells)
+        XCTAssertNil(result.meters)
+        XCTAssertEqual(result.issue, .noSurface)
+    }
+
+    func testSmoothingPreservesUnknownExplanationAndClearsOldDistance() {
+        var smoother = DepthSmoother()
+        _ = smoother.update([.ahead: SectorReading(meters: 1, coverage: 1)], capturedAt: 1, now: 1)
+        let lost = smoother.update([.ahead: DepthAnalysis.analyze(grid(7))], capturedAt: 1.1, now: 1.1)
+        XCTAssertNil(lost[.ahead]?.meters)
+        XCTAssertEqual(lost[.ahead]?.issue, .outsideRange)
+    }
+
+    func testCoverageExplanationIsNotAnAccuracyScore() {
+        let reading = SectorReading(meters: 1.4, coverage: 0.7, issue: .floorOnly)
+        XCTAssertNil(reading.issue)
+        XCTAssertTrue(reading.explanation.contains("70%"))
+        XCTAssertTrue(reading.explanation.contains("samples"))
+        XCTAssertFalse(reading.explanation.contains("accuracy"))
+    }
+
+    private var routineCue: DepthCue {
+        DepthGuidance.cue([.ahead: SectorReading(meters: 2, coverage: 1)], floorKnown: false)
+    }
+    private var closeCue: DepthCue {
+        DepthGuidance.cue([.ahead: SectorReading(meters: 0.7, coverage: 1)], floorKnown: false)
+    }
+
+    func testNewWarningCanInterruptRoutineSpeech() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 11, speaking: true))
+    }
+
+    func testSpeechPolicyBoundsRapidWarningChangesAndRepeats() {
+        var policy = DepthSpeechPolicy()
+        let unknown = DepthGuidance.cue([:], floorKnown: false)
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 10, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.5, speaking: true))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 11, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 20.9, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 21, speaking: true))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 21, speaking: false))
+    }
+
+    func testRoutineSpeechDoesNotQueueOrRepeatUnchangedCue() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 100, speaking: false))
+        let changed = DepthGuidance.cue([.ahead: SectorReading(meters: 3, coverage: 1)], floorKnown: false)
+        XCTAssertFalse(policy.shouldSpeak(changed, now: 101, speaking: true))
+        XCTAssertTrue(policy.shouldSpeak(changed, now: 101, speaking: false))
+    }
+
+    func testManualRepeatAndDepthLossCanReplaceSpeechImmediately() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(DepthGuidance.cue([:], floorKnown: false), now: 10.1, speaking: true, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10.2, speaking: true, manual: true))
+    }
+
+    func testSpeechPolicyRejectsNonFiniteAndBackwardTime() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: .nan, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(closeCue, now: 9, speaking: false, manual: true))
+    }
 }

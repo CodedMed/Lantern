@@ -30,8 +30,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
     private var smoother = DepthSmoother()
     private var expiryTimer: Timer?
     private let speech = AVSpeechSynthesizer()
-    private var spokenKey: String?
-    private var spokenAt = -Double.infinity
+    private var speechPolicy = DepthSpeechPolicy()
 
     override init() {
         super.init()
@@ -86,8 +85,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         configuration.environmentTexturing = .none
         clearReadings()
         lastProcessed = -.infinity
-        spokenKey = nil
-        spokenAt = -.infinity
+        speechPolicy = DepthSpeechPolicy()
         startedAt = CACurrentMediaTime()
         session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         running = true
@@ -97,8 +95,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
             guard let self, self.running else { return }
             guard let stamp = self.lastReceived,
                   DepthAnalysis.isFresh(capturedAt: stamp, now: CACurrentMediaTime()) else {
-                self.clearReadings()
-                self.status = "Waiting for fresh, confident LiDAR depth."
+                self.loseDepth("Waiting for fresh, confident LiDAR depth. Hold steady and aim forward.")
                 return
             }
         }
@@ -118,13 +115,22 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         status = "Camera off"
     }
 
-    private func clearReadings() {
+    private func clearReadings(stopSpeech: Bool = true) {
         smoother.reset()
         readings = [:]
         floorKnown = false
         lastReceived = nil
         cue = DepthGuidance.cue([:], floorKnown: false)
-        speech.stopSpeaking(at: .immediate)
+        if stopSpeech { speech.stopSpeaking(at: .immediate) }
+    }
+
+    private func loseDepth(_ message: String) {
+        let changedFromDistance = readings.values.contains { $0.meters != nil }
+        // Never leave a previous distance visible. Repeated missing frames must
+        // not cancel the same unknown warning every 100 ms before it finishes.
+        clearReadings(stopSpeech: changedFromDistance)
+        status = message
+        if changedFromDistance { say(cue, manual: true) }
     }
 
     func repeatCue() { say(cue, manual: true) }
@@ -132,46 +138,40 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
     private func say(_ cue: DepthCue, manual: Bool = false) {
         guard voiceEnabled, running else { return }
         let now = CACurrentMediaTime()
-        if !manual {
-            let interval = cue.key == spokenKey ? 10.0 : 3.0
-            guard now - spokenAt >= interval, !speech.isSpeaking else { return }
-            if cue.key == spokenKey && !cue.urgent { return }
-        }
+        guard speechPolicy.shouldSpeak(cue, now: now, speaking: speech.isSpeaking, manual: manual) else { return }
         speech.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: cue.speech)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         speech.speak(utterance)
-        spokenKey = cue.key
-        spokenAt = now
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard running, frame.timestamp >= startedAt, frame.timestamp - lastProcessed >= 0.1 else { return }
         lastProcessed = frame.timestamp
         guard DepthAnalysis.isFresh(capturedAt: frame.timestamp, now: CACurrentMediaTime()) else {
-            clearReadings()
-            status = "Depth delayed. Pause and wait for a fresh view."
+            loseDepth("Depth delayed. Pause and wait for a fresh view.")
             return
         }
         guard case .normal = frame.camera.trackingState else {
-            clearReadings()
-            status = "Tracking uncertain. Hold the phone steady and aim forward."
+            loseDepth("Tracking uncertain. Hold the phone steady, aim forward, and improve room lighting.")
             return
         }
         guard viewport.width > 0, viewport.height > 0,
               let depth = frame.sceneDepth, let confidence = depth.confidenceMap,
               let sampled = sample(frame: frame, depth: depth.depthMap, confidence: confidence) else {
-            clearReadings()
-            status = "LiDAR depth or confidence unavailable. Distance unknown."
+            loseDepth("LiDAR depth or confidence unavailable. Uncover the rear sensors and aim forward.")
             return
         }
         lastReceived = frame.timestamp
         floorKnown = sampled.floorKnown
+        let aheadWasMeasured = readings[.ahead]?.meters != nil
         readings = smoother.update(sampled.readings, capturedAt: frame.timestamp, now: CACurrentMediaTime())
         cue = DepthGuidance.cue(readings, floorKnown: floorKnown)
         status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
-        say(cue)
+        // A low-confidence region is also a loss, even if this ARFrame itself
+        // is fresh. Do not finish speaking an old measured-ahead cue over it.
+        say(cue, manual: aheadWasMeasured && readings[.ahead]?.meters == nil)
     }
 
     private func sample(frame: ARFrame, depth: CVPixelBuffer, confidence: CVPixelBuffer)
