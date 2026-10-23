@@ -58,7 +58,7 @@ private struct LidarScreen: View {
                         Text("Left, Ahead, and Right match the three boxes in the camera view. Hold the phone upright and aim forward while stationary.")
                         Text("Meters describe the nearest supported surface patch, not an identified object or a guaranteed free path. The sample percentage is depth coverage, not an accuracy score.")
                         Text("Unknown is intentional when depth is uncertain, outside the 0.2–4.5 m software window, or only classified floor is sampled. Re-aim slowly at an opaque nearby wall or furniture; never assume Unknown means clear.")
-                        Text("The direction check needs all three distances, stronger sample coverage, an identified floor and a steady, upright view. A side must be meaningfully farther than ahead and the other side. Ties, nearby surfaces, movement or missing depth remove the choice immediately. Check means inspect with the phone, not start walking.")
+                        Text("A direction comparison needs all three distances, stronger sample coverage, an identified floor and a steady, upright view. Missing readings produce a phone-only SCAN prompt to help measure that region, not a walking choice. CHECK appears only after comparison and settling. Unknown never means open space.")
                     }.font(.caption).padding(.top, 8)
                 }
                 Text("No API key, recording, upload, or distance calibration. Sensor data stays on this device.").font(.caption)
@@ -74,11 +74,11 @@ private struct LidarScreen: View {
     }
     private var adviceCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("PAUSE · DIRECTION TO INSPECT").font(.caption.bold())
+            Text(sensor.inspection.scanTarget == nil ? "PAUSE · DIRECTION TO INSPECT" : "PAUSE · PHONE SCAN ONLY").font(.caption.bold())
             HStack(alignment: .center, spacing: 16) {
                 Image(systemName: inspectionSymbol).font(.system(size: 48, weight: .bold))
                     .accessibilityHidden(true)
-                Text(sensor.inspection.target.map { "CHECK \($0.rawValue.uppercased())" } ?? sensor.inspection.title)
+                Text(adviceHeadline)
                     .font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
             }
             if sensor.cue.speechPriority == 2 {
@@ -105,9 +105,11 @@ private struct LidarScreen: View {
         }.controlSize(.large).tint(.black)
     }
     @ViewBuilder private var controlButtons: some View {
-        Button(sensor.running ? "Stop" : "Start LiDAR") {
+        Button {
             if sensor.running { sensor.stop() } else { sensor.start() }
-        }.buttonStyle(.borderedProminent).disabled(!sensor.supported || sensor.requestingPermission)
+        } label: {
+            Text(sensor.running ? "Stop" : "Start LiDAR").foregroundStyle(.white)
+        }.buttonStyle(.borderedProminent).tint(.black).disabled(!sensor.supported || sensor.requestingPermission)
         Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
             .accessibilityHint("Repeats current guidance when the voice is idle. Does not restart a sentence already playing.")
         Button("Distances") { sensor.readDistances() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
@@ -122,19 +124,25 @@ private struct LidarScreen: View {
                     Text(sensor.running ? (sensor.readings[sector]?.explanation ?? "Waiting for fresh depth") : "Camera off")
                         .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity, alignment: .top).padding(8).frame(maxHeight: .infinity, alignment: .top)
-                    .overlay(Rectangle().stroke(.gray.opacity(0.3)))
+                    .overlay(Rectangle().stroke(sensor.inspection.scanTarget == sector ? .black : .gray.opacity(0.3), lineWidth: sensor.inspection.scanTarget == sector ? 2 : 1))
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("distance-\(sector.rawValue)")
             }
         }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
     }
     private var inspectionSymbol: String {
+        if sensor.inspection.scanTarget != nil { return "viewfinder" }
         switch sensor.inspection.target {
         case .left: return "arrow.left"
         case .ahead: return "arrow.up"
         case .right: return "arrow.right"
         case nil: return "hand.raised"
         }
+    }
+    private var adviceHeadline: String {
+        if let sector = sensor.inspection.target { return "CHECK \(sector.rawValue.uppercased())" }
+        if let sector = sensor.inspection.scanTarget { return "SCAN \(sector.rawValue.uppercased())" }
+        return sensor.inspection.title
     }
 }
 

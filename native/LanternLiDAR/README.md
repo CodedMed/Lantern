@@ -79,7 +79,11 @@ Check ahead, Check right**, or explains why no direction is selected. These are
 phone-relative regions to inspect while stationary, not navigation commands.
 
 - Requires fresh, ordered data, a classified floor, and a valid distance with
-  at least 60% in-range/high-confidence grid coverage in **all three** regions.
+  at least 60% in-range/high-confidence grid coverage in **all three** regions
+  **for a CHECK comparison**. If a region is missing/low-coverage, the app instead
+  gives a distinct **SCAN [region]** instruction to acquire depth with the phone.
+  A SCAN is never a confirmed comparison or a walking recommendation; that region
+  stays Unknown if depth is absent. The raw sensor/coverage thresholds are unchanged.
   A floor somewhere in the map does not establish a continuous floor under a route.
 - Requires an upright portrait view, aiming within 25° of level; restarts the
   comparison after more than 12 cm translation or 10° rotation from the reference
@@ -101,6 +105,10 @@ phone-relative regions to inspect while stationary, not navigation commands.
 - Similar distances, all-nearby surfaces, missing/low-coverage depth, unclassified
   floor, excessive tilt, or a changed view immediately withdraw the visual choice.
   Reversals must settle again; the previous direction is not held through uncertainty.
+- Recovery prioritizes missing Ahead depth; otherwise it keeps one uncertain side
+  until that side recovers, avoiding scan-prompt flipping as coverage fluctuates.
+  Once all regions recover, CHECK acquisition starts again from zero. An unknown
+  side is not inserted into a distance ranking or treated as farther/open space.
 - Close-ahead warnings still start without waiting for direction acquisition.
   Short prompts put the action first ("Pause. Check right with the phone."). A
   direction that has already stabilized does not wait through a second voice
@@ -176,8 +184,12 @@ replace it.
 Audio/direction smoke test: the user reported clearer, complete iPhone speech and
 confirmed that the initial direction panel and speech work. This is user feedback,
 not an accessibility study or proof of safe route selection. The subsequent larger
-advice card, adaptive fast acquisition and shorter prompts need a separate physical
-check; automated tests alone do not confirm their sensor behavior or response time.
+advice card, adaptive fast acquisition and shorter prompts were installed. The user
+then reported unavailable guidance and supplied a screenshot: Left ~1.9 m/77%,
+Ahead ~1.4 m/83%, Right Unknown/low-confidence, with a classified floor. This
+identified the all-three-region comparison gate, not a floor-classification failure.
+The follow-up targeted SCAN recovery and Stop-label contrast fix require a new
+physical check; automated tests alone do not confirm sensor behavior or response time.
 
 While stationary (with a sighted helper if needed):
 

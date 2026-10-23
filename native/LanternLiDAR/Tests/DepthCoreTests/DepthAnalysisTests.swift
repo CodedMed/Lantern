@@ -370,7 +370,7 @@ final class DepthAnalysisTests: XCTestCase {
             var guide = DepthInspectionGuide()
             XCTAssertNotNil(settle(&guide, scene()).target)
             var input = scene(); input[sector] = .unknown
-            XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .missingDepth)
+            XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .scan(sector))
             XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 2.2, now: 2.2), .settling)
         }
         var guide = DepthInspectionGuide()
@@ -381,19 +381,19 @@ final class DepthAnalysisTests: XCTestCase {
         for coverage in [0.35, 0.5, 0.59] {
             var guide = DepthInspectionGuide()
             XCTAssertNotNil(scene(coverage: coverage)[.right]?.meters)
-            XCTAssertEqual(settle(&guide, scene(coverage: coverage)), .missingDepth)
+            XCTAssertEqual(settle(&guide, scene(coverage: coverage)), .scan(.ahead))
         }
     }
     func testMissingDictionaryEntryDoesNotTreatMissingSideAsFarAway() {
         var guide = DepthInspectionGuide()
         var input = scene(); input.removeValue(forKey: .left)
-        XCTAssertEqual(settle(&guide, input), .missingDepth)
+        XCTAssertEqual(settle(&guide, input), .scan(.left))
     }
     func testFloorOnlyOrOutsideRangeDoesNotMeanDirectionIsOpen() {
         for value in [DepthAnalysis.analyze(grid(1, floor: true)), DepthAnalysis.analyze(grid(7)), SectorReading(meters: .infinity, coverage: 1)] {
             var guide = DepthInspectionGuide()
             var input = scene(); input[.right] = value
-            XCTAssertEqual(settle(&guide, input), .missingDepth)
+            XCTAssertEqual(settle(&guide, input), .scan(.right))
         }
     }
     func testNewNearbySurfaceRemovesDirectionWithoutWaitingForSettling() {
@@ -544,7 +544,7 @@ final class DepthAnalysisTests: XCTestCase {
         }
         XCTAssertEqual(guide.update(scene(3, 0.8, 1), floorKnown: true, pose: uprightPose, capturedAt: 1.48, now: 1.48), .settling)
         var lost = scene(); lost[.left] = .unknown
-        XCTAssertEqual(guide.update(lost, floorKnown: true, pose: uprightPose, capturedAt: 1.6, now: 1.6), .missingDepth)
+        XCTAssertEqual(guide.update(lost, floorKnown: true, pose: uprightPose, capturedAt: 1.6, now: 1.6), .scan(.left))
     }
     func testConfirmedDirectionSkipsDoubleDebounceButKeepsCompletionGap() {
         var policy = DepthSpeechPolicy()
@@ -584,5 +584,79 @@ final class DepthAnalysisTests: XCTestCase {
         XCTAssertTrue(policy.shouldSpeak(first, now: 1, speaking: false))
         policy.didFinish(at: 2)
         XCTAssertFalse(policy.shouldSpeak(changed, now: 3, speaking: false))
+    }
+    func testReportedScreenshotProvidesRightScanInsteadOfDeadEnd() {
+        let input: [Sector: SectorReading] = [
+            .left: SectorReading(meters: 1.9, coverage: 0.77),
+            .ahead: SectorReading(meters: 1.4, coverage: 0.83),
+            .right: SectorReading(meters: nil, coverage: 0.2, issue: .lowConfidence)
+        ]
+        var guide = DepthInspectionGuide()
+        let result = settle(&guide, input)
+        XCTAssertEqual(result, .scan(.right))
+        XCTAssertNil(result.target) // Not a measured direction comparison.
+        XCTAssertEqual(result.scanTarget, .right)
+        XCTAssertTrue(result.detail.contains("Do not step"))
+        let cue = DepthGuidance.cue(input, floorKnown: true, inspection: result)
+        XCTAssertEqual(cue.speech, "Pause. Right depth uncertain. Re-aim the phone slowly.")
+        XCTAssertFalse(cue.hasConfirmedInspection)
+        XCTAssertNil(input[.right]?.meters)
+    }
+    func testScanTargetDoesNotFlapBetweenTwoUncertainSides() {
+        var guide = DepthInspectionGuide()
+        var input = scene(1, 2, 3)
+        input[.left] = SectorReading(meters: nil, coverage: 0.05)
+        input[.right] = SectorReading(meters: nil, coverage: 0.1)
+        XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1, now: 1), .scan(.left))
+        input[.left] = SectorReading(meters: nil, coverage: 0.2)
+        input[.right] = SectorReading(meters: nil, coverage: 0.01)
+        XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1.1, now: 1.1), .scan(.left))
+        input[.left] = SectorReading(meters: 1, coverage: 0.8)
+        XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1.2, now: 1.2), .scan(.right))
+    }
+    func testUnmeasuredAheadAlwaysTakesPriorityOverSideRecovery() {
+        var guide = DepthInspectionGuide()
+        var input = scene(); input[.right] = .unknown
+        _ = guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1, now: 1)
+        input[.ahead] = .unknown
+        let result = guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1.1, now: 1.1)
+        XCTAssertEqual(result, .scan(.ahead))
+        let cue = DepthGuidance.cue(input, floorKnown: true, inspection: result)
+        XCTAssertTrue(cue.speech.contains("Ahead depth uncertain"))
+        XCTAssertTrue(cue.key.hasPrefix("unknown:"))
+    }
+    func testRecoveringAllReadingsMustSettleAgainBeforeComparison() {
+        var guide = DepthInspectionGuide()
+        _ = settle(&guide, scene())
+        var missing = scene(); missing[.right] = .unknown
+        XCTAssertEqual(guide.update(missing, floorKnown: true, pose: uprightPose, capturedAt: 2.1, now: 2.1), .scan(.right))
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 2.2, now: 2.2), .settling)
+        XCTAssertEqual(settle(&guide, scene(), start: 2.3), .check(.right))
+    }
+    func testRecoveryScanDoesNotInterruptCurrentSentence() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 1, speaking: false))
+        let cue = DepthGuidance.cue(scene(), floorKnown: true, inspection: .scan(.right))
+        XCTAssertFalse(policy.shouldSpeak(cue, now: 2, speaking: true))
+        policy.didFinish(at: 3)
+        XCTAssertFalse(policy.shouldSpeak(cue, now: 3.4, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(cue, now: 4, speaking: false))
+    }
+    func testAheadRecoveryUsesUncertaintyDebounceNotConfirmedFastSpeech() {
+        var input = scene(); input[.ahead] = .unknown
+        let cue = DepthGuidance.cue(input, floorKnown: true, inspection: .scan(.ahead))
+        var policy = DepthSpeechPolicy()
+        XCTAssertFalse(policy.shouldSpeak(cue, now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(cue, now: 1.4, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(cue, now: 1.9, speaking: false))
+    }
+    func testCloseAheadWarningStillOutranksRecoveryScan() {
+        var input = scene(); input[.right] = .unknown
+        let cue = DepthGuidance.cue(input, floorKnown: true, inspection: .scan(.right))
+        XCTAssertEqual(cue.speechPriority, 2)
+        XCTAssertTrue(cue.speech.hasPrefix("Pause. Close ahead."))
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 1, speaking: false, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(cue, now: 2.1, speaking: true))
     }
 }

@@ -196,7 +196,7 @@ public struct DepthSpeechPolicy {
         }
         if !manual {
             let elapsed = now - lastTime
-            let settle = cue.hasConfirmedInspection ? 0 : cue.key == "unknown" ? 0.8 : escalates ? 0 : 0.45
+            let settle = cue.hasConfirmedInspection ? 0 : cue.key.hasPrefix("unknown") ? 0.8 : escalates ? 0 : 0.45
             guard now - candidateSince >= settle else { return false }
             guard escalates || now - finishedAt >= 0.8 else { return false }
             guard cue.key != lastKey || elapsed >= 12 else { return false }
@@ -214,12 +214,15 @@ public struct DepthSpeechPolicy {
 /// Kept separate from speech so a direction can disappear immediately while an
 /// already-playing sentence finishes instead of restarting on every frame.
 public enum InspectionAssessment: Equatable, Sendable {
-    case check(Sector), settling, missingDepth, floorUnknown, tilted, moving, nearbySurfaces, noPreference, stale
+    case check(Sector), scan(Sector), settling, missingDepth, floorUnknown, tilted, moving, nearbySurfaces, noPreference, stale
 
     public var target: Sector? { if case let .check(sector) = self { return sector }; return nil }
+    /// Acquiring a missing measurement is NOT a confirmed direction comparison.
+    public var scanTarget: Sector? { if case let .scan(sector) = self { return sector }; return nil }
     public var title: String {
         switch self {
         case let .check(sector): return "Check \(sector.rawValue)"
+        case let .scan(sector): return "Scan \(sector.rawValue) with phone"
         case .settling: return "Hold steady for a direction check"
         case .missingDepth, .stale: return "Direction unavailable"
         case .floorUnknown: return "Floor not identified"
@@ -235,6 +238,8 @@ public enum InspectionAssessment: Equatable, Sendable {
             return "No close surface was measured ahead in a steady view. Inspect ahead before moving. This does not verify a walking route."
         case let .check(sector):
             return "A farther surface was consistently measured on the \(sector.rawValue) than ahead and on the other side. Turn the phone to inspect that region; this is not an instruction to step there."
+        case let .scan(sector):
+            return "\(sector.rawValue.capitalized) needs a stronger depth reading for comparison. While stationary, gently re-aim the phone toward that region, then hold still. Do not step there; unknown does not mean open space."
         case .settling:
             return "Pause and hold the phone steady while all three regions are compared. No direction is selected yet."
         case .missingDepth:
@@ -256,6 +261,7 @@ public enum InspectionAssessment: Equatable, Sendable {
     public var speech: String {
         switch self {
         case let .check(sector): return "Check \(sector.rawValue) with the phone."
+        case let .scan(sector): return "\(sector.rawValue.capitalized) depth uncertain. Re-aim the phone slowly."
         case .settling: return "Hold steady for a direction check."
         case .missingDepth, .stale: return "Direction uncertain. Hold steady."
         case .floorUnknown: return "Floor not identified. Scan slowly."
@@ -268,6 +274,7 @@ public enum InspectionAssessment: Equatable, Sendable {
     public var key: String {
         switch self {
         case let .check(sector): return "check-\(sector.rawValue)"
+        case let .scan(sector): return "scan-\(sector.rawValue)"
         case .settling: return "settling"
         case .missingDepth: return "missing-depth"
         case .floorUnknown: return "floor-unknown"
@@ -319,6 +326,7 @@ public struct DepthInspectionGuide {
     private var anchor: InspectionPose?
     private var fastEligible = false
     private var ranges: [Sector: ClosedRange<Double>] = [:]
+    private var recoverySector: Sector?
     public init() {}
     public mutating func reset() { self = DepthInspectionGuide() }
 
@@ -331,15 +339,30 @@ public struct DepthInspectionGuide {
         }
         if let lastTimestamp, capturedAt - lastTimestamp > DepthAnalysis.maximumAge { reset() }
         lastTimestamp = capturedAt; lastNow = now
-        guard pose.isUpright else { clearCandidate(); anchor = nil; return .tilted }
+        guard pose.isUpright else { clearCandidate(); recoverySector = nil; anchor = nil; return .tilted }
         if let anchor, !pose.matches(anchor) {
-            clearCandidate(); self.anchor = pose
+            clearCandidate(); recoverySector = nil; self.anchor = pose
             return .moving
         }
         if anchor == nil { anchor = pose }
-        guard floorKnown else { clearCandidate(); return .floorUnknown }
-        guard Sector.allCases.allSatisfy({ readings[$0]?.meters != nil && (readings[$0]?.coverage ?? 0) >= 0.6 }),
-              let left = readings[.left]?.meters, let ahead = readings[.ahead]?.meters,
+        guard floorKnown else { clearCandidate(); recoverySector = nil; return .floorUnknown }
+        let deficient = Sector.allCases.filter { readings[$0]?.meters == nil || (readings[$0]?.coverage ?? 0) < 0.6 }
+        if !deficient.isEmpty {
+            clearCandidate()
+            // Explain how to acquire the missing view rather than disabling all
+            // advice. Ahead takes priority. Keep one side until it recovers so
+            // minor left/right coverage changes cannot make scan prompts flip.
+            let sector: Sector
+            if deficient.contains(.ahead) { sector = .ahead }
+            else if let recoverySector, deficient.contains(recoverySector) { sector = recoverySector }
+            else {
+                sector = deficient.min { (readings[$0]?.coverage ?? 0) < (readings[$1]?.coverage ?? 0) } ?? .ahead
+            }
+            recoverySector = sector
+            return .scan(sector)
+        }
+        recoverySector = nil
+        guard let left = readings[.left]?.meters, let ahead = readings[.ahead]?.meters,
               let right = readings[.right]?.meters else { clearCandidate(); return .missingDepth }
 
         let proposed: Sector
@@ -391,13 +414,20 @@ public enum DepthGuidance {
                            inspection: InspectionAssessment? = nil) -> DepthCue {
         let ahead = readings[.ahead]?.meters
         guard let ahead else {
+            if let inspection, inspection.scanTarget != nil {
+                return DepthCue(title: inspection.title, detail: inspection.detail,
+                                speech: "Pause. \(inspection.speech)", key: "unknown:\(inspection.key)", urgent: true)
+            }
             return DepthCue(title: "Distance unknown", detail: "Pause and inspect your surroundings. Missing depth does not mean clear space.", speech: "Pause. Distance uncertain. Hold the phone steady.", key: "unknown", urgent: true)
         }
         let text = String(format: "Surface ahead, about %.1f meters.", ahead)
         let closeSide = [Sector.left, .right].first { (readings[$0]?.meters ?? .infinity) < 0.75 }
         if ahead < 1.25 {
             let check = inspection?.speech ?? "Check around you."
-            let spoken = inspection?.target != nil ? "Pause. \(check)" : "Pause. Surface close ahead."
+            let spoken: String
+            if inspection?.target != nil { spoken = "Pause. \(check)" }
+            else if inspection?.scanTarget != nil { spoken = "Pause. Close ahead. \(check)" }
+            else { spoken = "Pause. Surface close ahead." }
             // Short mode speaks the action, not changing decimal distances.
             // Do not repeat the same direction just for a distance-bin wobble.
             let context = inspection?.key ?? "nearby:\(Int((ahead * 2).rounded()))"
