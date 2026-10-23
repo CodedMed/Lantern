@@ -228,8 +228,21 @@ final class DepthAnalysisTests: XCTestCase {
     func testManualRepeatAndDepthLossCanReplaceSpeechImmediately() {
         var policy = DepthSpeechPolicy()
         XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
-        XCTAssertTrue(policy.shouldSpeak(DepthGuidance.cue([:], floorKnown: false), now: 10.1, speaking: true, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(DepthGuidance.cue([:], floorKnown: false), now: 10.1, speaking: true, replacingStaleDistance: true))
         XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10.2, speaking: true, manual: true))
+    }
+
+    func testIntermittentDepthDoesNotRepeatedlyRestartTheSameUnknownWarning() {
+        var policy = DepthSpeechPolicy()
+        let unknown = DepthGuidance.cue([:], floorKnown: false)
+        XCTAssertTrue(policy.shouldSpeak(routineCue, now: 10, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 10.1, speaking: true, replacingStaleDistance: true))
+        // Short confident frames between unknown frames need not have been
+        // spoken. Losing them must not cut off the ongoing unknown sentence.
+        XCTAssertFalse(policy.shouldSpeak(routineCue, now: 10.2, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.3, speaking: true, replacingStaleDistance: true))
+        XCTAssertFalse(policy.shouldSpeak(unknown, now: 10.5, speaking: true, replacingStaleDistance: true))
+        XCTAssertTrue(policy.shouldSpeak(unknown, now: 20.2, speaking: false, replacingStaleDistance: true))
     }
 
     func testSpeechPolicyRejectsNonFiniteAndBackwardTime() {

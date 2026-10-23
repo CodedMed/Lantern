@@ -166,9 +166,12 @@ public struct DepthSpeechPolicy {
     private var lastKey: String?
     private var lastTime = -Double.infinity
     public init() {}
-    public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false) -> Bool {
+    public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false, replacingStaleDistance: Bool = false) -> Bool {
         guard now.isFinite, now >= lastTime else { return false }
-        if !manual {
+        // Losing a number may interrupt an older measured cue immediately,
+        // but a brief recovery/loss must not restart the same unknown warning.
+        let replacesOldCue = replacingStaleDistance && cue.key != lastKey
+        if !manual && !replacesOldCue {
             let elapsed = now - lastTime
             if cue.key == lastKey {
                 guard cue.urgent, elapsed >= 10, !speaking else { return false }

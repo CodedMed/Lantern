@@ -128,17 +128,17 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         let changedFromDistance = readings.values.contains { $0.meters != nil }
         // Never leave a previous distance visible. Repeated missing frames must
         // not cancel the same unknown warning every 100 ms before it finishes.
-        clearReadings(stopSpeech: changedFromDistance)
+        clearReadings(stopSpeech: false)
         status = message
-        if changedFromDistance { say(cue, manual: true) }
+        if changedFromDistance { say(cue, replacingStaleDistance: true) }
     }
 
     func repeatCue() { say(cue, manual: true) }
 
-    private func say(_ cue: DepthCue, manual: Bool = false) {
+    private func say(_ cue: DepthCue, manual: Bool = false, replacingStaleDistance: Bool = false) {
         guard voiceEnabled, running else { return }
         let now = CACurrentMediaTime()
-        guard speechPolicy.shouldSpeak(cue, now: now, speaking: speech.isSpeaking, manual: manual) else { return }
+        guard speechPolicy.shouldSpeak(cue, now: now, speaking: speech.isSpeaking, manual: manual, replacingStaleDistance: replacingStaleDistance) else { return }
         speech.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: cue.speech)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
@@ -171,7 +171,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate {
         status = floorKnown ? "LiDAR live · classified floor excluded" : "LiDAR live · floor not identified; aim forward"
         // A low-confidence region is also a loss, even if this ARFrame itself
         // is fresh. Do not finish speaking an old measured-ahead cue over it.
-        say(cue, manual: aheadWasMeasured && readings[.ahead]?.meters == nil)
+        say(cue, replacingStaleDistance: aheadWasMeasured && readings[.ahead]?.meters == nil)
     }
 
     private func sample(frame: ARFrame, depth: CVPixelBuffer, confidence: CVPixelBuffer)
