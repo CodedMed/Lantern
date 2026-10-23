@@ -18,7 +18,15 @@ private struct LidarScreen: View {
                     Spacer()
                     Text("LiDAR prototype").font(.caption).foregroundStyle(.secondary)
                 }
-                if sensor.running { adviceCard }
+                Toggle("Obstacle guidance · supervised demo", isOn: $sensor.obstacleGuidanceEnabled).tint(.black)
+                if sensor.obstacleGuidanceEnabled {
+                    Text("Experimental—not ready for independent navigation. Hold the phone upright near waist level, facing along your walking direction. Test while stationary with a sighted helper; keep using established mobility aids.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if sensor.running {
+                    if sensor.obstacleGuidanceEnabled { obstacleCard }
+                    else { adviceCard }
+                }
                 controls
                 Text(sensor.status).font(.caption).foregroundStyle(.secondary)
                 distanceCards
@@ -50,7 +58,7 @@ private struct LidarScreen: View {
                         Text("Voice speed")
                     } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
                         .tint(.black)
-                    Text("Messages finish before ordinary updates. Only a new close-ahead warning may interrupt. VoiceOver voice and speed settings take precedence when enabled.")
+                    Text("Messages finish before ordinary updates. A new STOP warning may interrupt. VoiceOver voice and speed settings take precedence when enabled.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 DisclosureGroup("How to read the distances") {
@@ -59,10 +67,11 @@ private struct LidarScreen: View {
                         Text("Meters describe the nearest supported surface patch, not an identified object or a guaranteed free path. The sample percentage is depth coverage, not an accuracy score.")
                         Text("Unknown is intentional when depth is uncertain, outside the 0.2–4.5 m software window, or only classified floor is sampled. Re-aim slowly at an opaque nearby wall or furniture; never assume Unknown means clear.")
                         Text("A direction comparison needs all three distances, stronger sample coverage, an identified floor and a steady, upright view. Missing readings produce a phone-only SCAN prompt to help measure that region, not a walking choice. CHECK appears only after comparison and settling. Unknown never means open space.")
+                        Text("Obstacle guidance uses separate full-depth 3D space checks, not these three numbers. The boxes show distance-sample regions, not the edges of a walking corridor. STOP is the default when floor support or forward space is unobserved. Turn cues mean stop and turn in place, then wait for a fresh forward check—not sidestep while walking.")
                     }.font(.caption).padding(.top, 8)
                 }
                 Text("No API key, recording, upload, or distance calibration. Sensor data stays on this device.").font(.caption)
-                Text("Experimental surface awareness, not navigation or collision avoidance. Glass, dark/reflective surfaces, thin hazards, steps and drop-offs can be missed. Unknown is not clear. Keep using established mobility aids. Never use for road crossing.")
+                Text("Experimental assistance, not validated navigation or collision avoidance. Glass, dark/reflective surfaces, thin hazards, steps and drop-offs can be missed. Unknown is not clear. Keep using established mobility aids. Never use for road crossing.")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(20)
         }.background(.white).foregroundStyle(.black).preferredColorScheme(.light)
@@ -71,6 +80,43 @@ private struct LidarScreen: View {
                 else if newPhase == .background || !sensor.requestingPermission { sensor.stop() }
             }
             .onDisappear { sensor.stop() }
+    }
+    private var obstacleCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("OBSTACLE GUIDANCE · EXPERIMENTAL").font(.caption.bold())
+            HStack(spacing: 16) {
+                Image(systemName: obstacleSymbol).font(.system(size: 44, weight: .bold)).accessibilityHidden(true)
+                Text(sensor.obstacleDecision.title).font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(sensor.obstacleDecision.detail).font(.subheadline)
+            Text("Suggested heading only. Low/thin obstacles, steps, glass and unseen areas may be missed. No safe-route guarantee.")
+                .font(.caption)
+            DisclosureGroup("Space-check details") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if sensor.obstacleCorridors.isEmpty {
+                        Text("No usable level floor reference yet. With a sighted helper, briefly observe the floor, then hold the phone upright near waist/lower-chest level and point it forward.")
+                    }
+                    ForEach(Sector.allCases, id: \.self) { sector in
+                        if let corridor = sensor.obstacleCorridors[sector] {
+                            let observed = corridor.probes.filter { $0 == .observedBeyond }.count
+                            let blocked = corridor.probes.filter { $0 == .occluded }.count
+                            Text("\(sector.rawValue.capitalized): \(observed)/75 space samples observed beyond; \(blocked) occluded; floor \(corridor.floorSupported ? "covered" : "incomplete").")
+                        }
+                    }
+                    Text("These are sampled-space checks, not an accuracy percentage or a complete scan of every hazard.")
+                }.font(.caption).padding(.top, 8)
+            }.font(.caption).tint(.white)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            .background(.black).foregroundStyle(.white).clipShape(RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain).accessibilityIdentifier("obstacle-guidance")
+    }
+    private var obstacleSymbol: String {
+        switch sensor.obstacleDecision {
+        case .ahead: return "arrow.up"
+        case .turn(.left): return "arrow.turn.up.left"
+        case .turn(.right): return "arrow.turn.up.right"
+        case .turn(.ahead), .stop: return "hand.raised"
+        }
     }
     private var adviceCard: some View {
         VStack(alignment: .leading, spacing: 12) {

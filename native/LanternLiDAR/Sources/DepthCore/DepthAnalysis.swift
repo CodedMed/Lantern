@@ -158,12 +158,13 @@ public struct DepthCue: Equatable, Sendable {
     public let speech: String
     public let key: String
     public let urgent: Bool
-    // Uncertainty and side changes are cautions, not reasons to cut off another
-    // warning. Only a new close-ahead warning may interrupt lower-priority speech.
+    // Legacy close-ahead cues and experimental walking-mode STOP cues use the
+    // pause prefix. Ordinary side/direction changes never cut another warning.
     public var speechPriority: Int { key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0 }
     // These keys are emitted only after the sensor-independent guide has already
     // stabilized a direction; do not add a second speech debounce on top of it.
     public var hasConfirmedInspection: Bool { key.contains(":check-") }
+    public var hasStabilizedDirection: Bool { hasConfirmedInspection || key.hasPrefix("pause:walk-turn-") }
 }
 
 /// Latest-frame speech scheduling, not a safety guarantee. No utterance backlog:
@@ -196,11 +197,11 @@ public struct DepthSpeechPolicy {
         }
         if !manual {
             let elapsed = now - lastTime
-            let settle = cue.hasConfirmedInspection ? 0 : cue.key.hasPrefix("unknown") ? 0.8 : escalates ? 0 : 0.45
+            let settle = cue.hasStabilizedDirection ? 0 : cue.key.hasPrefix("unknown") ? 0.8 : escalates ? 0 : 0.45
             guard now - candidateSince >= settle else { return false }
             guard escalates || now - finishedAt >= 0.8 else { return false }
             guard cue.key != lastKey || elapsed >= 12 else { return false }
-            guard escalates || cue.hasConfirmedInspection || elapsed >= 3 else { return false }
+            guard escalates || cue.hasStabilizedDirection || elapsed >= 3 else { return false }
         }
         lastKey = cue.key
         lastTime = now
@@ -302,7 +303,7 @@ public struct InspectionPose: Sendable {
         self.position = position; self.forward = f; self.up = u
     }
     public var isUpright: Bool { up.y >= cos(25 * .pi / 180) && abs(forward.y) <= sin(25 * .pi / 180) }
-    fileprivate func matches(_ other: InspectionPose) -> Bool {
+    func matches(_ other: InspectionPose) -> Bool {
         let delta = position - other.position
         return Self.dot(delta, delta) <= 0.12 * 0.12
             && Self.dot(forward, other.forward) >= cos(10 * .pi / 180)

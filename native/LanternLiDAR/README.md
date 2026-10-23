@@ -71,7 +71,81 @@ accuracy**. The in-app help explains positioning and these limits.
 Leaving and returning reads new depth. There is no chair identity, stored chair
 size, runtime distance calibration, or manual same-chair confirmation.
 
+## Obstacle guidance — supervised experimental mode
+
+The primary mode now addresses **walking-heading feedback**, rather than asking
+the user only to aim the camera. It is enabled by the clearly labeled supervised
+demo toggle. This is local obstacle awareness, **not validated navigation or a
+replacement for a cane, guide dog or trained assistance**. Keep the phone pointing
+along the body's heading; the app cannot independently measure body orientation.
+Test while stationary with a sighted helper, not by walking into obstacles.
+The toggle defaults **off**: opt into "Obstacle guidance · supervised demo" before
+starting this mode. Turning it off preserves the earlier phone-only SCAN/CHECK
+mode. "Space-check details" shows observed/occluded probe counts and floor support
+for each candidate, so a STOP can be diagnosed without treating the three meter
+cards as route-clearance evidence.
+
+The output is:
+
+- **STRAIGHT AHEAD** / "Straight ahead looks less obstructed" only after the
+  forward sampled space and floor checks pass and settle. This does not certify
+  a path or tell someone it is safe to start walking.
+- **STOP · TURN LEFT/RIGHT** / "Stop. Turn slightly left, then recheck" only when
+  an obstruction was actually measured ahead and a side has enough observed space.
+  Stop first, turn slightly **in place**, and wait for a new forward assessment;
+  do not sidestep or follow a latched turn while walking.
+- **STOP**, with the reason, for missing forward depth, incomplete floor support,
+  an uncertain/changed view, or no observed alternative. Unknown is never ranked
+  as an open or distant route. A known left alternative can be considered even
+  if the right is unknown; an unknown ahead alone never triggers a turn.
+
+This mode does **not** pick the largest of the three displayed meter readings.
+Within the locked current-frame buffers it instead:
+
+1. Unprojects a separate 32 × 40 full-depth grid (1,280 points) using actual camera
+   intrinsics and world pose. Keeps only high-confidence, in-range points.
+2. Establishes a level reference from classified floor polygons below the camera
+   (camera-to-floor software window 0.6–1.7 m). Floor support is checked across a
+   one-metre-wide planning envelope, starting 0.3 m ahead. This is polygon support,
+   not proof that there are no holes, steps or drop-offs within a plane estimate.
+3. Tests non-floor hits inside that envelope, 0.15–2.05 m above the reference floor.
+   Even an isolated supported hit can veto a corridor; there is no six-point
+   outlier suppression in this obstacle pass.
+4. Projects 75 space probes per candidate into the **same depth frame**. Probes
+   span five widths and five heights (0.2–1.8 m above floor). Forward stations are
+   1.2/1.6/2.0 m; side headings are ±12° with stations at 2.0/2.3/2.6 m. Side cues
+   are stop-and-turn suggestions, not proof of near-side stepping clearance.
+5. For every probe, requires at least five high-confidence, supported-range
+   samples in its 3 × 3 pixel neighborhood, measured at least 0.15 m beyond the
+   probe in camera-Z depth. Any supported closer neighbor vetoes that probe.
+   Off-camera probes and insufficient neighborhoods stay Unknown. Every probe,
+   floor support, and the dense obstacle pass must pass; empty arrays cannot pass.
+6. Prefers forward. A turn needs >=0.6 s/four frames of stable evidence and a
+   steady pose (12 cm/10° reference-view tolerance); forward needs >=0.5 s/four
+   frames. If both alternatives meet identical eligibility checks, left is the
+   deterministic tie choice, not a claim that left is safer or optimal.
+7. Removes directions on new obstructions, unknown data, floor-level jumps,
+   tracking loss, stale/out-of-order frames or heading changes. Turn candidates
+   reset on movement; a new forward check is required after reorientation.
+
+Processing remains bounded to at most 10 Hz with no retained ARFrames, RGB
+uploads, paid API or utterance backlog. These are scheduling/algorithm constants,
+**not measured response time, FPS or accuracy claims**. Normal messages finish;
+a new walking-mode STOP may interrupt lower-priority speech through the existing
+bounded escalation policy. Direction changes never repeatedly cut a STOP sentence.
+
+The tests use synthetic space/depth cases, not a clinical or mobility evaluation.
+Sparse samples, unobserved near-foot/overhead areas, glass, classification errors
+and moving hazards remain limitations. At some holding heights the camera cannot
+observe all probes; STOP is intentional, not a promise of a route. Try a stationary
+waist-to-lower-chest-height setup with a sighted helper. No setting or passed test
+makes independent blind walking safe. Real-device performance, distances, false
+negatives, reaction time and accessibility require systematic validation.
+
 ## Direction to inspect (not permission to walk)
+
+This is the previous measurement-inspection mode, available with obstacle guidance
+turned **off**. Its SCAN/CHECK commands concern only the phone, not body direction.
 
 The three numbers cannot establish a traversable corridor, detect every step or
 drop-off, or account for body width. The native app therefore says **Check left,
@@ -171,6 +245,9 @@ unprojection and conservative cues. They do not establish sensor accuracy.
 Direction tests cover all 343 combinations of seven synthetic distances in three
 regions, plus missing/floor-only depth, stronger coverage, pose changes, tilt,
 reversals, flickering candidates, stale/repeated frames, and speech completion.
+Obstacle-guide tests additionally cover observed/blocked/unknown corridor mixes,
+side independence, full probe counts, every-probe requirements, thin closer hits,
+floor gaps, body-envelope geometry, movement, turns, stale data and STOP priority.
 
 ## Physical-device acceptance checklist
 
@@ -190,6 +267,11 @@ Ahead ~1.4 m/83%, Right Unknown/low-confidence, with a classified floor. This
 identified the all-three-region comparison gate, not a floor-classification failure.
 The follow-up targeted SCAN recovery and Stop-label contrast fix require a new
 physical check; automated tests alone do not confirm sensor behavior or response time.
+
+The subsequent obstacle-guidance mode is a new algorithm, not a relabeling of
+SCAN. Its physical behavior is **not yet validated**. Start with stationary,
+supervised checks of STOP, an observed forward setup, and a near obstruction plus
+an observed side alternative. Never validate it by walking blind into obstacles.
 
 While stationary (with a sighted helper if needed):
 
