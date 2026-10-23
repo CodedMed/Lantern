@@ -1,4 +1,5 @@
 import { normalizeDetections } from "../../utils/scene.mjs";
+import { filterRoomDetections } from "../../utils/obstacles.mjs";
 
 // One model, one load promise, one inference at a time. No API key or image uploads.
 export class Detector {
@@ -14,6 +15,7 @@ export class Detector {
     this.model = null;
     this.busy = false;
     this.backend = null;
+    this.base = "mobilenet_v2";
   }
   async load(onStatus = () => {}) {
     if (this.model) return this.model;
@@ -31,7 +33,7 @@ export class Detector {
       await tf.ready();
       this.backend = tf.getBackend();
       onStatus("Downloading the recognition model. First use takes longer…");
-      this.model = await coco.load({ base: "lite_mobilenet_v2" });
+      this.model = await coco.load({ base: this.base });
       return this.model;
     })().finally(() => {
       this.pending = null;
@@ -49,13 +51,16 @@ export class Detector {
       if (!(width > 0 && height > 0))
         throw new Error("The image or camera is not ready yet.");
       const start = performance.now();
-      const predictions = await model.detect(source, 20, threshold);
+      const predictions = await model.detect(source, 40, threshold);
       return {
-        detections: normalizeDetections(predictions, width, height, threshold),
+        detections: filterRoomDetections(
+          normalizeDetections(predictions, width, height, threshold),
+        ),
         elapsed: Math.round(performance.now() - start),
         width,
         height,
         backend: this.backend,
+        model: this.base,
       };
     } finally {
       this.busy = false;

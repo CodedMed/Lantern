@@ -5,6 +5,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   contrast: false,
   largeText: false,
   threshold: 0.5,
+  model: "detail",
 });
 export const SETTINGS_KEY = "lantern.preferences.v1";
 export function sanitizeSettings(value = {}) {
@@ -13,6 +14,7 @@ export function sanitizeSettings(value = {}) {
     speech: typeof value.speech === "boolean" ? value.speech : true,
     contrast: value.contrast === true,
     largeText: value.largeText === true,
+    model: value.model === "fast" ? "fast" : "detail",
     rate: Number.isFinite(value.rate)
       ? Math.min(1.5, Math.max(0.6, value.rate))
       : DEFAULT_SETTINGS.rate,

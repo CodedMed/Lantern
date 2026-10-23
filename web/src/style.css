@@ -252,6 +252,61 @@ header {
 .feedback {
   padding: 20px 20px 8px;
 }
+.range-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: #555;
+  min-height: 44px;
+  border-top: 1px solid #eee;
+  margin-top: 4px;
+}
+.range-status button,
+.clear-range {
+  background: none;
+  border: none;
+  text-decoration: underline;
+  min-height: 44px;
+  font-size: 12px;
+  padding: 6px 0;
+  white-space: nowrap;
+}
+.distance-form .setting {
+  gap: 12px;
+  align-items: flex-start;
+  line-height: 1.5;
+}
+.distance-form select,
+.distance-form input[type="number"],
+.model-setting select {
+  font: inherit;
+  background: white;
+  color: #111;
+  border: 1px solid #aaa;
+  border-radius: 3px;
+  min-height: 44px;
+  padding: 7px;
+  max-width: 58%;
+  min-width: 90px;
+}
+.distance-form input[type="number"] {
+  width: 105px;
+}
+.confirmation input {
+  flex-shrink: 0;
+}
+.clear-range {
+  display: block;
+  margin-top: 12px;
+}
+.model-setting {
+  flex-wrap: wrap;
+}
+.large-text .range-status {
+  font-size: 14px;
+}
 .cue {
   min-height: 72px;
 }

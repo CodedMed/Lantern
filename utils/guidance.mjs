@@ -1,21 +1,16 @@
 import { getPosition } from "./scene.mjs";
+import {
+  filterRoomDetections,
+  roomLabel,
+  inspectionAdvice,
+} from "./obstacles.mjs";
 
 // Image-space prominence is NOT depth. Never infer that another side is safe.
-const BACKGROUND = new Set([
-  "kite",
-  "bird",
-  "airplane",
-  "clock",
-  "traffic light",
-  "stop sign",
-]);
 export function getGuidance(detections) {
-  const candidates = detections
+  const candidates = filterRoomDetections(detections)
     .filter((item) => {
       const [top, , bottom] = item.bbox;
-      return (
-        !BACKGROUND.has(item.class) && bottom > 0.45 && bottom - top >= 0.14
-      );
+      return bottom > 0.45 && bottom - top >= 0.14;
     })
     .map((item) => {
       const [top, left, bottom, right] = item.bbox;
@@ -28,15 +23,32 @@ export function getGuidance(detections) {
       const prominent = ahead && bottom - top >= 0.55 && bottom >= 0.65;
       const area = (right - left) * (bottom - top);
       const level = prominent ? "pause" : ahead ? "ahead" : "side";
-      const name = item.class[0].toUpperCase() + item.class.slice(1);
-      const speech = `${name} ${position === "ahead" ? "ahead" : `on ${position}`}.${prominent ? " Pause." : ""}`;
+      const label = roomLabel(item.class);
+      const name = label[0].toUpperCase() + label.slice(1);
+      const advice = ahead ? inspectionAdvice(detections) : null;
+      const roundedRange = item.range
+        ? Math.max(0.5, Math.round(item.range.meters * 2) / 2)
+        : null;
+      const pauseCue = prominent
+        ? advice.check === "around" || advice.check === "both"
+          ? " Pause."
+          : ` Pause; check ${advice.check}.`
+        : "";
+      const speech = roundedRange
+        ? `${name}, about ${roundedRange} meters.${pauseCue}`
+        : `${name} ${position === "ahead" ? "ahead" : `on ${position}`}.${pauseCue}`;
       return {
         ...item,
         position,
         level,
         speech,
-        key: `${item.class}:${position}:${level}`,
-        rank: (prominent ? 4 : ahead ? 2 : 0) + area + item.score * 0.1,
+        advice,
+        key: `${item.class}:${position}:${level}:${advice?.check || "none"}:${roundedRange || "unknown"}`,
+        rank:
+          (prominent ? 4 : ahead ? 2 : 0) +
+          (item.trend === "growing" ? 0.5 : 0) +
+          area +
+          item.score * 0.1,
       };
     })
     .sort((a, b) => b.rank - a.rank);
@@ -55,6 +67,14 @@ export function getGuidance(detections) {
           ? "Position in the camera view. Check before moving."
           : "Unrecognized hazards may still be present.",
     speech: alert?.speech || "",
+    advice: alert?.advice || null,
+    proximity:
+      alert?.range?.label ||
+      (alert?.trend === "growing"
+        ? "Getting larger in view"
+        : alert?.trend === "shrinking"
+          ? "Getting smaller in view"
+          : "Distance unknown"),
   };
 }
 

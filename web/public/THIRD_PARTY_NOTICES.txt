@@ -1,7 +1,8 @@
 Lantern web demo credits
 
 Object recognition: @tensorflow-models/coco-ssd 2.2.3 with the pretrained
-ssd_lite_mobilenet_v2 TensorFlow.js model (80 COCO categories).
+ssd_mobilenet_v2 (Detail) and ssdlite_mobilenet_v2 (Fast) TensorFlow.js
+models (80 COCO categories, filtered to room-level obstacles in the UI).
 TensorFlow.js and TensorFlow.js Models: Copyright Google LLC, Apache-2.0.
 https://github.com/tensorflow/tfjs-models/tree/master/coco-ssd
 https://github.com/tensorflow/tfjs

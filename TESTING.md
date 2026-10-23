@@ -21,7 +21,7 @@
 ## Automated
 
 - Clean `npm ci --prefix web`: successful, no dependency overrides needed.
-- `npm run test:web`: 14 passing tests covering coordinates, invalid boxes,
+- Initial repair `npm run test:web`: 14 passing tests covering coordinates, invalid boxes,
   conservative descriptions, corrupted preferences, deduplicated model loading,
   failed-load retry, failed-inference unlock, CPU initialization fallback, camera
   denial, video-only permissions, missing camera APIs, and stale-camera cleanup.
@@ -57,3 +57,32 @@ be significantly slower. Confidence is a model score, not measured accuracy.
   compatibility. Its older TensorFlow adapter has legacy peer constraints.
 - Accessibility testing with VoiceOver/TalkBack users and an actual accuracy
   evaluation remain future work. Do not use this prototype as a mobility aid.
+
+## Room-obstacle and calibrated-range revision
+
+- `npm run test:web`: **54 passing tests** including the existing regression tests,
+  room-output filtering, model selection, union-area sector coverage, conservative
+  check-direction suggestions, image-size trends, synthetic pinhole range math,
+  stale/clipped/off-center/tiny/ambiguous targets, changed bearing/aspect/shape,
+  non-reused track IDs, and invalid measurement rejection.
+- `npm run build:web`: passed. No dependencies or API keys were added. The
+  larger lazy TensorFlow chunk still produces Vite's bundle-size warning.
+- Detail is now the browser default, with Fast available in Settings. This uses
+  official pretrained variants, not custom training or a validated accuracy gain.
+- Real Detail inference on a temporary COCO room photo produced sofa/cat boxes
+  and omitted remote-control boxes. The temporary test photo is not bundled or
+  distributed with the app. This single fixture is not an accuracy evaluation.
+- Distance setup was checked with the camera off: it explains the need for a
+  live view and measured reference, offers no reference, and disables submission.
+  Photo mode cannot provide a valid measurement reference.
+- Changing to Fast restarted the page with Camera off, persisted the selected
+  option, and successfully ran the bundled sample photo with real inference.
+- One warmed Detail inference on the room fixture displayed 22 ms on this
+  computer's WebGL backend. This excludes download/setup and camera latency;
+  it is not a mobile benchmark or before/after speed claim.
+- Range tests use **synthetic boxes and known mathematical ratios**, not physical
+  measurements. They validate implementation and rejection rules only. Physical
+  calibration error, different lenses, moving cameras/furniture, similar-object
+  substitutions, and safe navigation have **not** been validated. Ranging is
+  explicitly marked rough/unvalidated and cannot serve as collision avoidance.
+- No private camera frames were recorded or uploaded for this revision.

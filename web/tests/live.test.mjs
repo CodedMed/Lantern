@@ -34,7 +34,7 @@ test("native timer cancellation is not invoked with the loop as its browser rece
 });
 test("a prominent central object produces a short pause cue, never a safe-side instruction", () => {
   const cue = getGuidance([object("chair", [0.2, 0.25, 0.95, 0.8])]);
-  assert.equal(cue.speech, "Chair ahead. Pause.");
+  assert.equal(cue.speech, "Chair ahead. Pause; check left.");
   assert.equal(cue.alert.level, "pause");
   assert.doesNotMatch(
     JSON.stringify(cue),

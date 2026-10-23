@@ -5,6 +5,8 @@ import { requestCamera, stopStream } from "./camera.mjs";
 import { LiveLoop, isFreshFrame } from "./liveLoop.mjs";
 import { Narrator } from "./narrator.mjs";
 import { getGuidance, GuidanceFilter } from "../../utils/guidance.mjs";
+import { RangeTracker } from "../../utils/rangeTracking.mjs";
+import { roomLabel } from "../../utils/obstacles.mjs";
 import {
   readSettings,
   sanitizeSettings,
@@ -94,7 +96,11 @@ function Boxes({ frame, size }) {
         const [top, left, bottom, right] = item.bbox;
         const x = left * size.width,
           y = top * size.height;
-        const labelWidth = (item.class.length * 0.56 + 0.8) * font;
+        const label = `${roomLabel(item.class)}${item.range ? ` · ${item.range.label}` : ""}`;
+        const labelWidth = Math.min(
+          size.width - 4,
+          (label.length * 0.5 + 0.8) * font,
+        );
         const labelX = Math.max(2, Math.min(x, size.width - labelWidth - 2));
         const labelY = Math.max(font * 1.3, y);
         return (
@@ -126,7 +132,7 @@ function Boxes({ frame, size }) {
               fontSize={font}
               fill="black"
             >
-              {item.class}
+              {label}
             </text>
           </g>
         );
@@ -181,6 +187,10 @@ function App() {
   const [error, setError] = useState("");
   const [modal, setModal] = useState(null);
   const [size, setSize] = useState({ width: 640, height: 960 });
+  const [rangeTarget, setRangeTarget] = useState("");
+  const [measuredDistance, setMeasuredDistance] = useState("");
+  const [measurementConfirmed, setMeasurementConfirmed] = useState(false);
+  const [rangeError, setRangeError] = useState("");
   const videoRef = useRef(null),
     imageRef = useRef(null),
     fileRef = useRef(null);
@@ -194,9 +204,11 @@ function App() {
     loopRef = useRef(null),
     narratorRef = useRef(null);
   const filter = useRef(new GuidanceFilter());
+  const rangeTracker = useRef(new RangeTracker());
+  const lastStats = useRef(null);
   const speechAvailable =
     "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
-  state.current = { source, settings, paused };
+  state.current = { source, settings, paused, modal, cue };
   if (!narratorRef.current)
     narratorRef.current = new Narrator({
       engine: window.speechSynthesis,
@@ -259,7 +271,13 @@ function App() {
       .catch(() => setError("Tap the camera view to start its preview."));
   }, [source]);
   useEffect(() => {
-    if (!mediaReady || !modelReady || paused || modal || source.type === "idle")
+    if (
+      !mediaReady ||
+      !modelReady ||
+      paused ||
+      (modal && modal !== "distance") ||
+      source.type === "idle"
+    )
       return;
     loopRef.current.start();
     return () => loopRef.current.stop();
@@ -267,12 +285,16 @@ function App() {
   useEffect(() => {
     if (!modal) return;
     narratorRef.current.stop();
-    setFrame(null);
+    if (modal !== "distance") {
+      setFrame(null);
+      rangeTracker.current.reset();
+    }
   }, [modal]);
   useEffect(() => {
     if (!frame || source.type !== "camera") return;
     const timer = setTimeout(
       () => {
+        rangeTracker.current.reset();
         setFrame(null);
         setCue({
           title: "Waiting for a fresh view.",
@@ -295,6 +317,7 @@ function App() {
     pendingRef.current = false;
     narratorRef.current.reset();
     filter.current.reset();
+    rangeTracker.current.reset();
     setPending(false);
     setMediaReady(false);
     setPaused(false);
@@ -310,6 +333,11 @@ function App() {
     setModelLoading(true);
     setModelError(false);
     try {
+      if (!detector.model && !detector.pending)
+        detector.base =
+          state.current.settings.model === "fast"
+            ? "lite_mobilenet_v2"
+            : "mobilenet_v2";
       await detector.load();
       if (alive.current) {
         setModelReady(true);
@@ -420,28 +448,56 @@ function App() {
   }
   function receive(result) {
     if (!alive.current || result.token !== generation.current) return;
-    const { source: currentSource, settings: currentSettings } = state.current;
+    lastStats.current = {
+      elapsed: result.elapsed,
+      backend: result.backend,
+      model: result.model,
+    };
+    const {
+      source: currentSource,
+      settings: currentSettings,
+      modal: currentModal,
+      cue: currentCue,
+    } = state.current;
     if (
       currentSource.type === "camera" &&
       !isFreshFrame(result.capturedAt, performance.now())
     ) {
       setFrame(null);
+      rangeTracker.current.reset();
       setCue({
         title: "Detection is catching up.",
         detail: "Hold still. Do not rely on delayed results.",
       });
       return;
     }
+    result = {
+      ...result,
+      detections: rangeTracker.current.update(
+        result.detections,
+        result.capturedAt,
+        result,
+      ),
+    };
     setFrame(result);
+    setSize((current) =>
+      current.width === result.width && current.height === result.height
+        ? current
+        : { width: result.width, height: result.height },
+    );
     setError("");
     const guidance = getGuidance(result.detections);
     const confirmed =
       currentSource.type === "photo"
         ? guidance
         : filter.current.update(guidance);
-    if (confirmed || !guidance.alert) {
+    if (
+      confirmed ||
+      !guidance.alert ||
+      (currentCue.alert?.range && !guidance.alert?.range)
+    ) {
       setCue(guidance);
-      if (currentSettings.speech && confirmed?.alert)
+      if (currentSettings.speech && !currentModal && confirmed?.alert)
         narratorRef.current.say(confirmed.alert, {
           rate: currentSettings.rate,
         });
@@ -451,6 +507,7 @@ function App() {
   function togglePause() {
     narratorRef.current.stop();
     filter.current.reset();
+    rangeTracker.current.reset();
     setFrame(null);
     setError("");
     setPaused((current) => !current);
@@ -468,6 +525,49 @@ function App() {
         { manual: true, rate: settings.rate },
       );
     update("speech", !settings.speech);
+  }
+  function openDistance() {
+    setRangeTarget("");
+    setMeasuredDistance("");
+    setMeasurementConfirmed(false);
+    setRangeError("");
+    setModal("distance");
+  }
+  function saveDistance(event) {
+    event.preventDefault();
+    if (state.current.source.type !== "camera" || state.current.paused) {
+      setRangeError("Start the live camera before calibrating a distance.");
+      return;
+    }
+    if (!measurementConfirmed) {
+      setRangeError(
+        "Confirm that you measured the distance to this stationary object.",
+      );
+      return;
+    }
+    try {
+      rangeTracker.current.calibrate(
+        Number(rangeTarget),
+        Number(measuredDistance),
+        performance.now(),
+      );
+      setRangeError("");
+      setModal(null);
+    } catch (cause) {
+      setRangeError(cause.message);
+    }
+  }
+  function changeModel(value) {
+    const next = sanitizeSettings({ ...settings, model: value });
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      stopCamera();
+      window.location.reload();
+    } catch {
+      setError(
+        "Browser storage is unavailable, so the model setting could not be saved.",
+      );
+    }
   }
   function upload(event) {
     const file = event.target.files?.[0];
@@ -508,6 +608,12 @@ function App() {
       .map((item) => getGuidance([item]).alert?.position)
       .filter(Boolean),
   );
+  const rangeTargets = (
+    source.type === "camera" ? frame?.detections || [] : []
+  ).filter((item) =>
+    rangeTracker.current.canCalibrate(item.trackId, performance.now()),
+  );
+  const rangedObject = frame?.detections.find((item) => item.range);
 
   return (
     <main className={`app ${settings.largeText ? "large-text" : ""}`}>
@@ -642,7 +748,27 @@ function App() {
       <section className="feedback" aria-label="Current object alert">
         <div className="cue" aria-live="polite" aria-atomic="true">
           <h2>{cue.title}</h2>
-          <p>{cue.detail}</p>
+          <p>
+            {cue.advice
+              ? `${roomLabel(cue.alert.class)} ahead. ${cue.advice.message}`
+              : cue.detail}
+          </p>
+        </div>
+        <div className="range-status">
+          <span>
+            {rangedObject
+              ? `${roomLabel(rangedObject.class)}: ${rangedObject.range.label} (rough)`
+              : rangeTracker.current.status.includes("Recalibrate")
+                ? rangeTracker.current.status
+                : cue.proximity || "Distance unknown"}
+          </span>
+          <button
+            onClick={openDistance}
+            disabled={paused}
+            aria-label="Calibrate distance"
+          >
+            Set distance
+          </button>
         </div>
         {error && (
           <p className="error" role="alert">
@@ -748,17 +874,127 @@ function App() {
           onChange={upload}
         />
         <p>
-          Objects can be missed. No distance or safe-route detection.
+          Objects can be missed. Ranges are rough and require calibration.
           <br />
           Keep using your usual mobility aids. Do not use for road crossing.
         </p>
       </footer>
       {modal && (
         <Dialog
-          title={modal === "settings" ? "Settings" : "About Lantern"}
+          title={
+            modal === "settings"
+              ? "Settings"
+              : modal === "distance"
+                ? "Distance setup"
+                : "About Lantern"
+          }
           onClose={() => setModal(null)}
         >
-          {modal === "settings" ? (
+          {modal === "distance" ? (
+            <form className="distance-form" onSubmit={saveDistance}>
+              <p className="note">
+                Optional rough range for one stationary piece of furniture.
+                Measure its distance from the camera first, then keep the whole
+                object in view at the same angle. This is not a depth sensor.
+              </p>
+              {!activeCamera && (
+                <p className="note">
+                  Start the live camera first. Photos cannot be used to
+                  calibrate a real distance.
+                </p>
+              )}
+              <label className="setting">
+                Tracked object
+                <select
+                  aria-label="Stationary object to calibrate"
+                  value={rangeTarget}
+                  onChange={(event) => setRangeTarget(event.target.value)}
+                >
+                  <option value="">Choose an object</option>
+                  {rangeTargets.map((item) => (
+                    <option key={item.trackId} value={item.trackId}>
+                      {roomLabel(item.class)} · center-
+                      {(item.bbox[1] + item.bbox[3]) / 2 < 0.5
+                        ? "left"
+                        : "right"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {!rangeTargets.length && (
+                <p className="note">
+                  No stable, fully visible furniture yet. Point at a single
+                  chair, table, sofa, or bed, center it, and hold still. People
+                  and pets cannot be used as range references. Try Fast model if
+                  your device struggles.
+                </p>
+              )}
+              <label className="setting">
+                Measured distance (meters)
+                <input
+                  aria-label="Measured distance in meters"
+                  type="number"
+                  inputMode="decimal"
+                  min="0.5"
+                  max="8"
+                  step="0.1"
+                  placeholder="e.g. 2.0"
+                  required
+                  value={measuredDistance}
+                  onChange={(event) => setMeasuredDistance(event.target.value)}
+                />
+              </label>
+              <label className="setting confirmation">
+                I measured this distance; the whole object is stationary and
+                visible.
+                <input
+                  aria-label="Confirm measured distance and stationary object"
+                  type="checkbox"
+                  checked={measurementConfirmed}
+                  onChange={(event) =>
+                    setMeasurementConfirmed(event.target.checked)
+                  }
+                />
+              </label>
+              {rangeError && (
+                <p className="error" role="alert">
+                  {rangeError}
+                </p>
+              )}
+              <button
+                className="test-voice"
+                type="submit"
+                disabled={
+                  !rangeTarget || !measuredDistance || !measurementConfirmed
+                }
+              >
+                Use measured distance
+              </button>
+              <button
+                className="clear-range"
+                type="button"
+                onClick={() => {
+                  rangeTracker.current.clearCalibration();
+                  setFrame(null);
+                  setCue({
+                    title: "Checking view…",
+                    detail: "Calibration cleared. Distance unknown.",
+                  });
+                  setModal(null);
+                }}
+              >
+                Clear calibration
+              </button>
+              <p className="note">
+                Estimates apply only while this uninterrupted geometric track
+                remains valid. Occlusion, zoom, rotation, a changed camera/view,
+                a missed detection, or a similar-looking replacement can
+                invalidate the estimate. It does not identify individual objects
+                or detect every zoom, angle change, or object swap. Never use
+                the number to decide whether a route is safe.
+              </p>
+            </form>
+          ) : modal === "settings" ? (
             <>
               <label className="setting">
                 Voice alerts
@@ -822,6 +1058,22 @@ function App() {
                 Higher thresholds hide uncertain detections but can miss more
                 objects. Preferences save on this device.
               </p>
+              <label className="setting model-setting">
+                Detection model
+                <select
+                  aria-label="Detection model"
+                  value={settings.model}
+                  onChange={(event) => changeModel(event.target.value)}
+                >
+                  <option value="detail">Detail · larger download</option>
+                  <option value="fast">Fast · lighter model</option>
+                </select>
+              </label>
+              <p className="note">
+                Detail uses the more accurate COCO-SSD MobileNet V2 variant;
+                Fast uses Lite MobileNet V2. Switching restarts the page and
+                camera. Neither is certified for safe navigation.
+              </p>
             </>
           ) : (
             <div className="about">
@@ -832,20 +1084,35 @@ function App() {
               </p>
               <p>
                 Alerts are brief: “Chair ahead,” “Person on left,” or “Chair
-                ahead. Pause.” An object filling the center may trigger a pause
-                cue, but image size is not distance. Left/right labels refer to
-                the camera image, including the unmirrored front camera.
+                ahead. Pause.” Directions say where to check, not where it is
+                safe to step. An object filling the center may trigger a pause
+                cue, but image size alone is not distance. Left/right labels
+                refer to the camera image, including the unmirrored front
+                camera.
               </p>
               <p>
                 Unchanged alerts are quiet. A persistent prominent central
                 object may repeat after 12 seconds. The app never says a side is
-                safe or tells you to step into an unverified path.
+                safe or tells you to step into an unverified path. Less detected
+                coverage only suggests a side to inspect.
               </p>
               <p>
-                This prototype recognizes 80 COCO object categories using
-                COCO-SSD. It misses hazards such as steps, holes, glass, and
-                objects outside its training categories. It cannot replace a
-                cane, guide dog, or other mobility support.
+                The pretrained COCO-SSD model is filtered to people, furniture,
+                pets, and floor-level bags. Laptops, TVs, keyboards, and other
+                small desk items are hidden from boxes and speech. This is
+                category filtering, not custom training. It misses hazards such
+                as steps, holes, glass, and objects outside its training
+                categories. It cannot replace a cane, guide dog, or other
+                mobility support.
+              </p>
+              <p>
+                Without calibration, size changes are described as getting
+                larger/smaller in view; this is not measured motion or depth.
+                Optional distance setup uses a known measured range and the size
+                ratio of the same stationary object. It rounds estimates to 0.5
+                m, rejects inconsistent views, and requires recalibration after
+                tracking loss. Accuracy is not validated, and other objects
+                remain unmeasured.
               </p>
               <p>
                 Recognition runs in this browser. Images are not uploaded. The
@@ -870,10 +1137,14 @@ function App() {
                   Credits
                 </a>
               </p>
-              {frame && (
+              {lastStats.current && (
                 <p className="note">
-                  Last inference: {frame.elapsed} ms · {frame.backend} · this is
-                  not total camera-to-alert latency.
+                  Last inference: {lastStats.current.elapsed} ms ·{" "}
+                  {lastStats.current.backend} ·{" "}
+                  {lastStats.current.model === "mobilenet_v2"
+                    ? "Detail"
+                    : "Fast"}{" "}
+                  · this is not total camera-to-alert latency.
                 </p>
               )}
             </div>
