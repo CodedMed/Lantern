@@ -167,7 +167,9 @@ public struct DepthCue: Equatable, Sendable {
     // These keys are emitted only after the sensor-independent guide has already
     // stabilized a direction; do not add a second speech debounce on top of it.
     public var hasConfirmedInspection: Bool { key.contains(":check-") }
-    public var hasStabilizedDirection: Bool { hasConfirmedInspection || key.hasPrefix("pause:walk-turn-") }
+    public var hasStabilizedDirection: Bool {
+        hasConfirmedInspection || key.hasPrefix("pause:walk-turn-") || key == "walk:ahead" || key == "walk:caution"
+    }
 }
 
 /// Latest-frame speech scheduling, not a safety guarantee. No utterance backlog:

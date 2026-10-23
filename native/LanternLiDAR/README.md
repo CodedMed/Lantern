@@ -87,13 +87,19 @@ cards as route-clearance evidence.
 
 The output is:
 
-- **STRAIGHT AHEAD** / "Straight ahead looks less obstructed" only after the
-  forward sampled space and floor checks pass and settle. This does not certify
-  a path or tell someone it is safe to start walking.
-- **STOP · TURN LEFT/RIGHT** / "Stop. Turn slightly left, then recheck" only when
-  an obstruction was actually measured ahead and a side has enough observed space.
-  Stop first, turn slightly **in place**, and wait for a new forward assessment;
-  do not sidestep or follow a latched turn while walking.
+- **KEEP HEADING** only after the sampled **near** space and floor checks pass
+  and settle. This does not certify a safe path or permission to start walking.
+- **SLOW · AHEAD** for a farther measured obstacle (enter warning at 2.4 m, leave
+  at 2.7 m). A wall about 2.2 m away is an early warning, not an automatic STOP,
+  provided the near-space checks pass. Short speech includes an approximate
+  distance rounded to half a metre; decimal changes do not restart the sentence.
+- **STOP · TURN LEFT/RIGHT 30°/50°/70°** only when a close obstruction is measured
+  ahead and a side has observed near space and floor support. Stop first, turn
+  **in place** with the phone aligned to the body, and wait for a fresh forward
+  assessment. Do not sidestep or follow a latched turn while walking.
+- **STOP · SCAN LEFT/RIGHT** when no turn is measured but another heading can be
+  scanned. This explicitly says to scan with the phone, **not step**. Missing
+  floor instead gives a specific tilt-down/floor-scan instruction.
 - **STOP**, with the reason, for missing forward depth, incomplete floor support,
   an uncertain/changed view, or no observed alternative. Unknown is never ranked
   as an open or distant route. A known left alternative can be considered even
@@ -102,31 +108,53 @@ The output is:
 This mode does **not** pick the largest of the three displayed meter readings.
 Within the locked current-frame buffers it instead:
 
-1. Unprojects a separate 32 × 40 full-depth grid (1,280 points) using actual camera
-   intrinsics and world pose. Keeps only high-confidence, in-range points.
+1. Samples a separate 64 × 48 full-depth grid (3,072 locations) using actual camera
+   intrinsics and world pose. Keeps only high-confidence, in-range depth. The
+   three existing display meters retain their own 360-cell pipeline.
 2. Establishes a level reference from classified floor polygons below the camera
    (camera-to-floor software window 0.6–1.7 m). Floor support is checked across a
-   one-metre-wide planning envelope, starting 0.3 m ahead. This is polygon support,
+   one-metre-wide **near** planning envelope, from 0.3 to 1.5 m ahead. This is polygon support,
    not proof that there are no holes, steps or drop-offs within a plane estimate.
-3. Tests non-floor hits inside that envelope, 0.15–2.05 m above the reference floor.
+3. Tests hits 0.15–2.05 m above the reference floor, looking up to 3 m along each
+   candidate heading. Hits within the 1.5 m near horizon plus 0.15 m margin block
+   that candidate. Farther hits warn rather than blocking the whole room.
    Even an isolated supported hit can veto a corridor; there is no six-point
    outlier suppression in this obstacle pass.
-4. Projects 75 space probes per candidate into the **same depth frame**. Probes
-   span five widths and five heights (0.2–1.8 m above floor). Forward stations are
-   1.2/1.6/2.0 m; side headings are ±12° with stations at 2.0/2.3/2.6 m. Side cues
-   are stop-and-turn suggestions, not proof of near-side stepping clearance.
+4. Projects 75 near-space probes per heading: five widths, five heights
+   (0.2–1.8 m above floor), and stations at 1.2/1.35/1.5 m. Tests **seven headings**:
+   forward and ±30°/50°/70°. The previous ±12° / 2.0–2.6 m volume often overlapped
+   the same wall in every candidate. The closest body plane must also fit a
+   waist-level camera view; synthetic projection tests cover this failure mode.
 5. For every probe, requires at least five high-confidence, supported-range
    samples in its 3 × 3 pixel neighborhood, measured at least 0.15 m beyond the
    probe in camera-Z depth. Any supported closer neighbor vetoes that probe.
-   Off-camera probes and insufficient neighborhoods stay Unknown. Every probe,
-   floor support, and the dense obstacle pass must pass; empty arrays cannot pass.
-6. Prefers forward. A turn needs >=0.6 s/four frames of stable evidence and a
-   steady pose (12 cm/10° reference-view tolerance); forward needs >=0.5 s/four
-   frames. If both alternatives meet identical eligibility checks, left is the
-   deterministic tie choice, not a claim that left is safer or optimal.
-7. Removes directions on new obstructions, unknown data, floor-level jumps,
+   An **in-view uncertain patch stays Unknown even if an older view was clear**.
+   Every probe, floor support, and the dense obstacle pass must pass; empty arrays
+   cannot pass. The obstruction pass also checks hits inside the near volume,
+   rather than assuming that far probe rays prove all space before them is empty.
+6. Keeps at most 12 geometric depth snapshots to briefly stitch off-camera
+   space during a stationary scan. Uses actual world coordinates, not old screen
+   columns. Forward unseen-view evidence expires after 1.0 s; turn evidence after
+   1.2 s. Current depth must still be fresh within 0.5 s. A 15 cm translation from
+   the scan origin, tracking loss, Stop/background, bad timestamps, a long frame
+   gap, or floor-level jump clears the memory. No ARFrame/RGB/buffer is retained;
+   masked scalar depth and world points are kept **in RAM only**, never persisted
+   or uploaded. This short memory is not a persistent map or dynamic-hazard guarantee.
+7. Prefers forward; otherwise chooses the smallest eligible measured turn. Needs
+   >=0.25 s/three distinct frames for forward/warning, >=0.35 s/three frames for a
+   turn (at a 10 Hz cap these usually need another frame). Turns additionally need
+   a steady pose (12 cm/10° reference-view tolerance). Warning hysteresis avoids
+   switching between forward/warning on decimal noise and does not insert a STOP
+   when merely entering the distant-warning band. Ties are deterministic, not a
+   proof that one side is safer or an optimal route.
+8. Removes directions on new close obstructions, unknown data, floor-level jumps,
    tracking loss, stale/out-of-order frames or heading changes. Turn candidates
    reset on movement; a new forward check is required after reorientation.
+
+The 1.5 m horizon, margin, width, height and warning band are **unvalidated fixed
+prototype settings**, not safe stopping distances and not adapted to walking speed.
+Do not defer stopping until a threshold when a cane/helper or your own assessment
+indicates danger. Body orientation is not independently tracked.
 
 Processing remains bounded to at most 10 Hz with no retained ARFrames, RGB
 uploads, paid API or utterance backlog. These are scheduling/algorithm constants,
@@ -252,6 +280,13 @@ reversals, flickering candidates, stale/repeated frames, and speech completion.
 Obstacle-guide tests additionally cover observed/blocked/unknown corridor mixes,
 side independence, full probe counts, every-probe requirements, thin closer hits,
 floor gaps, body-envelope geometry, movement, turns, stale data and STOP priority.
+The near-field revision adds a projected analytic room fixture: a 2.2 m wall gives
+an early warning without a scan at the fixture's waist-level camera pose; a new
+0.7 m wall revokes it immediately; a 0.9 m narrow central obstacle admits a measured
+50° alternative after a side scan. These are **synthetic geometry results**, not
+real-phone success rates. Tests also cover warning hysteresis, malformed/duplicate
+headings, floor-specific recovery, world-view stitching, bounded storage, motion
+and age expiry, and current bad/closer depth overriding old free observations.
 
 ## Physical-device acceptance checklist
 
@@ -276,6 +311,12 @@ The subsequent obstacle-guidance mode is a new algorithm, not a relabeling of
 SCAN. Its physical behavior is **not yet validated**. Start with stationary,
 supervised checks of STOP, an observed forward setup, and a near obstruction plus
 an observed side alternative. Never validate it by walking blind into obstacles.
+
+The user subsequently supplied screenshots showing generic STOP even around
+2.1–2.6 m readings, with incomplete floor coverage and several blocked body probes.
+The near-field revision above addresses the overlong shared volume, narrow turn
+fan and camera-visibility problem. **The revised physical behavior is pending a
+new stationary, supervised check**; passed room simulations are not device validation.
 
 While stationary (with a sighted helper if needed):
 

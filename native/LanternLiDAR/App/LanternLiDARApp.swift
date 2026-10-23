@@ -20,7 +20,7 @@ private struct LidarScreen: View {
                 }
                 Toggle("Obstacle guidance · supervised demo", isOn: $sensor.obstacleGuidanceEnabled).tint(.black)
                 if sensor.obstacleGuidanceEnabled {
-                    Text("Experimental—not ready for independent navigation. Hold the phone upright near waist level, facing along your walking direction. Test while stationary with a sighted helper; keep using established mobility aids.")
+                    Text("Experimental. Test stationary with a sighted helper; keep using your mobility aid. Hold the phone upright near waist level, aligned with your body.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if sensor.running {
@@ -88,20 +88,23 @@ private struct LidarScreen: View {
                 Image(systemName: obstacleSymbol).font(.system(size: 44, weight: .bold)).accessibilityHidden(true)
                 Text(sensor.obstacleDecision.title).font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
             }
+            if let ahead = sensor.obstaclePaths.first(where: { $0.degrees == 0 })?.corridor.nearestObstacle {
+                Text(String(format: "Nearest sampled hit ahead · %.1f m", ahead)).font(.headline)
+            }
             Text(sensor.obstacleDecision.detail).font(.subheadline)
-            Text("Suggested heading only. Low/thin obstacles, steps, glass and unseen areas may be missed. No safe-route guarantee.")
-                .font(.caption)
+            Text("Suggested heading, not a verified safe route.").font(.caption)
             DisclosureGroup("Space-check details") {
                 VStack(alignment: .leading, spacing: 8) {
                     if sensor.obstacleCorridors.isEmpty {
                         Text("No usable level floor reference yet. With a sighted helper, briefly observe the floor, then hold the phone upright near waist/lower-chest level and point it forward.")
                     }
-                    ForEach(Sector.allCases, id: \.self) { sector in
-                        if let corridor = sensor.obstacleCorridors[sector] {
-                            let observed = corridor.probes.filter { $0 == .observedBeyond }.count
-                            let blocked = corridor.probes.filter { $0 == .occluded }.count
-                            Text("\(sector.rawValue.capitalized): \(observed)/75 space samples observed beyond; \(blocked) occluded; floor \(corridor.floorSupported ? "covered" : "incomplete").")
-                        }
+                    Text("Near-space window: 1.5 m, plus a 0.15 m depth margin. Distant-obstacle warning starts at 2.4 m. These are unvalidated prototype settings, not safe stopping distances.")
+                    ForEach(sensor.obstaclePaths, id: \.degrees) { path in
+                        let corridor = path.corridor
+                        let observed = corridor.probes.filter { $0 == .observedBeyond }.count
+                        let blocked = corridor.probes.filter { $0 == .occluded }.count
+                        let label = path.degrees == 0 ? "Ahead" : "\(path.sector.rawValue.capitalized) \(abs(path.degrees))°"
+                        Text("\(label): \(observed)/75 near-space samples; \(blocked) occluded; floor \(corridor.floorSupported ? "covered" : "incomplete").")
                     }
                     Text("These are sampled-space checks, not an accuracy percentage or a complete scan of every hazard.")
                 }.font(.caption).padding(.top, 8)
@@ -113,9 +116,11 @@ private struct LidarScreen: View {
     private var obstacleSymbol: String {
         switch sensor.obstacleDecision {
         case .ahead: return "arrow.up"
-        case .turn(.left): return "arrow.turn.up.left"
-        case .turn(.right): return "arrow.turn.up.right"
-        case .turn(.ahead), .stop: return "hand.raised"
+        case .caution: return "exclamationmark.triangle"
+        case .turn(.left, _): return "arrow.turn.up.left"
+        case .turn(.right, _): return "arrow.turn.up.right"
+        case .scan: return "viewfinder"
+        case .turn(.ahead, _), .stop: return "hand.raised"
         }
     }
     private var adviceCard: some View {

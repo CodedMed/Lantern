@@ -695,7 +695,9 @@ final class ObstacleGuidanceTests: XCTestCase {
     func testAllBlockedOrUnknownAlternativesStop() {
         for alternative in [blocked, unknown] {
             var guide = ObstacleGuide()
-            XCTAssertEqual(settle(&guide, [.ahead: blocked, .left: alternative, .right: alternative]), .stop(.noAlternative))
+            let result = settle(&guide, [.ahead: blocked, .left: alternative, .right: alternative])
+            if alternative.isBlocked { XCTAssertEqual(result, .stop(.noAlternative)) }
+            else { XCTAssertEqual(result, .scan(.left)) }
         }
     }
     func testNewForwardObstacleWithdrawsForwardImmediately() {
@@ -805,7 +807,7 @@ final class ObstacleGuidanceTests: XCTestCase {
         XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 4.9, speaking: false))
     }
     func testTurnPromptIsMovementHeadingAndAlwaysSaysStopFirst() {
-        XCTAssertEqual(ObstacleDecision.turn(.left).cue.speech, "Stop. Turn slightly left, then recheck.")
+        XCTAssertEqual(ObstacleDecision.turn(.left).cue.speech, "Stop. Turn left about 30 degrees. Then recheck.")
         XCTAssertFalse(ObstacleDecision.turn(.right).cue.speech.contains("phone"))
         XCTAssertFalse(ObstacleDecision.ahead.cue.speech.contains("safe"))
     }
@@ -834,5 +836,281 @@ final class ObstacleGuidanceTests: XCTestCase {
             if guide.update([.ahead: observed], pose: rotated, floorLevel: 0, capturedAt: stamp, now: stamp) == .stop(.recheck) { rechecked = true }
         }
         XCTAssertTrue(rechecked)
+    }
+    func testTwoMeterWallWarnsRatherThanForcingStopOrTurn() {
+        for distance in [1.8, 2.0, 2.2, 2.4] {
+            var guide = ObstacleGuide()
+            let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: distance)
+            XCTAssertFalse(wall.isBlocked)
+            XCTAssertTrue(wall.isObserved)
+            XCTAssertEqual(settle(&guide, [.ahead: wall, .left: unknown, .right: unknown]), .caution)
+        }
+    }
+    func testFarWallCannotHideNearChairOrUnknownFloor() {
+        var guide = ObstacleGuide()
+        let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: 2.2)
+        XCTAssertEqual(settle(&guide, [.ahead: wall]), .caution)
+        XCTAssertEqual(guide.update([.ahead: blocked], pose: pose, floorLevel: 0, capturedAt: 1.9, now: 1.9), .stop(.noAlternative))
+        let noFloor = ObstacleCorridor(probes: observed.probes, floorSupported: false, nearestObstacle: 2.2)
+        XCTAssertEqual(settle(&guide, [.ahead: noFloor], start: 2), .stop(.floor))
+    }
+    func testEarlyWarningHysteresisAvoidsFlappingAndNeedlessStop() {
+        var guide = ObstacleGuide()
+        XCTAssertEqual(settle(&guide, [.ahead: observed]), .ahead)
+        for (i, distance) in [2.2, 2.5, 2.39, 2.65].enumerated() {
+            let wall = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: distance)
+            let time = 1.9 + Double(i) * 0.1
+            XCTAssertEqual(guide.update([.ahead: wall], pose: pose, floorLevel: 0, capturedAt: time, now: time), .caution)
+        }
+        let far = ObstacleCorridor(probes: observed.probes, floorSupported: true, nearestObstacle: 2.8)
+        XCTAssertEqual(guide.update([.ahead: far], pose: pose, floorLevel: 0, capturedAt: 2.4, now: 2.4), .ahead)
+    }
+    func testWiderMeasuredTurnCanAvoidBlockedSmallTurn() {
+        let paths = [ObstaclePath(degrees: 0, corridor: blocked), ObstaclePath(degrees: -30, corridor: blocked),
+                     ObstaclePath(degrees: -50, corridor: observed), ObstaclePath(degrees: 30, corridor: unknown)]
+        var guide = ObstacleGuide()
+        var result = ObstacleDecision.stop(.unknown)
+        for i in 0...5 {
+            let time = 1 + Double(i) * 0.1
+            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
+        }
+        XCTAssertEqual(result, .turn(.left, degrees: 50))
+        XCTAssertTrue(result.cue.speech.contains("50 degrees"))
+    }
+    func testSmallestEligibleTurnPreferredOverUnnecessarySharpTurn() {
+        let paths = [ObstaclePath(degrees: 0, corridor: blocked), ObstaclePath(degrees: -70, corridor: observed),
+                     ObstaclePath(degrees: 30, corridor: observed)]
+        var guide = ObstacleGuide()
+        var result = ObstacleDecision.stop(.unknown)
+        for i in 0...5 {
+            let time = 1 + Double(i) * 0.1
+            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
+        }
+        XCTAssertEqual(result, .turn(.right))
+    }
+    func testMalformedOrDuplicateHeadingsNeverProduceMovement() {
+        for paths in [[ObstaclePath(degrees: 90, corridor: observed), ObstaclePath(degrees: 0, corridor: blocked)],
+                      [ObstaclePath(degrees: 0, corridor: observed), ObstaclePath(degrees: 0, corridor: observed)]] {
+            var guide = ObstacleGuide()
+            XCTAssertEqual(guide.update(paths, pose: pose, floorLevel: 0, capturedAt: 1, now: 1), .stop(.unknown))
+        }
+    }
+    func testMissingSideFloorRequestsFloorScanNotEndlessGenericStop() {
+        var guide = ObstacleGuide()
+        let noFloor = ObstacleCorridor(probes: observed.probes, floorSupported: false, nearestObstacle: nil)
+        XCTAssertEqual(settle(&guide, [.ahead: blocked, .left: noFloor]), .stop(.floor))
+        XCTAssertTrue(ObstacleDecision.stop(.floor).cue.speech.contains("Tilt the phone down"))
+    }
+    func testRecoveryScanNeverBecomesWalkingInstruction() {
+        var guide = ObstacleGuide()
+        let result = settle(&guide, [.ahead: blocked, .left: unknown])
+        XCTAssertEqual(result, .scan(.left))
+        XCTAssertTrue(result.cue.speech.contains("Do not step"))
+        XCTAssertEqual(result.cue.speechPriority, 3)
+        XCTAssertFalse(result.cue.hasStabilizedDirection)
+    }
+    func testNewGeometryChecksNearSpaceRatherThanWholeRoom() {
+        for degrees in ObstacleGeometry.headings {
+            let angle = Double(degrees) * .pi / 180
+            let probes = ObstacleGeometry.probes(degrees: degrees)
+            XCTAssertEqual(probes.count, 75)
+            for probe in probes {
+                let along = probe.x * sin(angle) + probe.z * cos(angle)
+                XCTAssertGreaterThanOrEqual(along, 1.199)
+                XCTAssertLessThanOrEqual(along, 1.501)
+            }
+        }
+        XCTAssertEqual(ObstacleGeometry.obstacleRange([SIMD3(0, 1, 2.2)], sector: .ahead), 2.2)
+    }
+    func testNewCloseObstacleCancelsEarlyWarningImmediately() {
+        var speech = DepthSpeechPolicy()
+        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.caution.cue, now: 1, speaking: false))
+        XCTAssertTrue(speech.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.01, speaking: true))
+    }
+    func testNarratedDistanceDoesNotRestartForDecimalNoise() {
+        let first = ObstacleDecision.caution.cue(aheadMeters: 2.2)
+        let second = ObstacleDecision.caution.cue(aheadMeters: 2.05)
+        XCTAssertTrue(first.speech.contains("2.0 meters"))
+        XCTAssertEqual(first.key, second.key)
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(first, now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(second, now: 1.2, speaking: true))
+        XCTAssertEqual(ObstacleDecision.caution.cue(aheadMeters: .nan), ObstacleDecision.caution.cue)
+    }
+}
+
+final class ObstacleDepthMemoryTests: XCTestCase {
+    private func snapshot(time: Double, depth: Float = 3, yaw: Double = 0, position: SIMD3<Double> = SIMD3(0, 1, 0)) -> ObstacleDepthSnapshot {
+        let angle = yaw * .pi / 180
+        return ObstacleDepthSnapshot(timestamp: time, position: position,
+            right: SIMD3(cos(angle), 0, -sin(angle)), up: SIMD3(0, 1, 0), back: SIMD3(sin(angle), 0, cos(angle)),
+            fx: 0.8, fy: 0.8, cx: 0.5, cy: 0.5, width: 31, height: 31,
+            depths: Array(repeating: depth, count: 31 * 31))!
+    }
+    func testWorldProjectionSeparatesOutsideViewFromUncertainDepth() {
+        let frame = snapshot(time: 1)
+        XCTAssertEqual(frame.probe(SIMD3(0, 1, -1)), .observedBeyond)
+        XCTAssertEqual(frame.probe(SIMD3(0, 1, -3)), .occluded)
+        XCTAssertNil(frame.probe(SIMD3(-2, 1, -1)))
+        XCTAssertNil(frame.probe(SIMD3(0, 1, 1)))
+        XCTAssertEqual(snapshot(time: 1, depth: .nan).probe(SIMD3(0, 1, -1)), .unknown)
+    }
+    func testSideScanUsesWorldCoordinatesNotOldScreenColumns() {
+        var memory = ObstacleDepthMemory()
+        let leftTarget = SIMD3<Double>(-1.2, 1, -1)
+        memory.insert(snapshot(time: 1, yaw: 45))
+        memory.insert(snapshot(time: 1.1))
+        XCTAssertNil(snapshot(time: 1.1).probe(leftTarget))
+        XCTAssertEqual(memory.probe(leftTarget, now: 1.1, turning: true), .observedBeyond)
+        XCTAssertEqual(memory.probe(SIMD3(1.2, 1, -1), now: 1.1, turning: true), .unknown)
+    }
+    func testNewLowConfidenceInViewCannotBorrowOldClearDepth() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1))
+        memory.insert(snapshot(time: 1.1, depth: .nan))
+        XCTAssertEqual(memory.probe(SIMD3(0, 1, -1), now: 1.1, turning: false), .unknown)
+    }
+    func testNewCloserSurfaceImmediatelyVetoesOldClearDepth() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1))
+        memory.insert(snapshot(time: 1.1, depth: 0.6))
+        XCTAssertEqual(memory.probe(SIMD3(0, 1, -1), now: 1.1, turning: false), .occluded)
+    }
+    func testMapExpiresAndCurrentFrameMustStillBeFresh() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1, yaw: 45))
+        memory.insert(snapshot(time: 1.4))
+        let target = SIMD3<Double>(-1.2, 1, -1)
+        XCTAssertEqual(memory.probe(target, now: 1.4, turning: true), .observedBeyond)
+        XCTAssertEqual(memory.probe(target, now: 2, turning: true), .unknown)
+        XCTAssertTrue(memory.hits(now: 2, turning: true).isEmpty)
+        XCTAssertEqual(memory.probe(target, now: 1.3, turning: true), .unknown)
+    }
+    func testForwardMemoryHasShorterAgeThanTurnScanMemory() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1, yaw: 45))
+        memory.insert(snapshot(time: 1.4))
+        memory.insert(snapshot(time: 1.7))
+        memory.insert(snapshot(time: 2.1))
+        let target = SIMD3<Double>(-1.2, 1, -1)
+        XCTAssertEqual(memory.probe(target, now: 2.1, turning: true), .observedBeyond)
+        XCTAssertEqual(memory.probe(target, now: 2.1, turning: false), .unknown)
+    }
+    func testCameraTranslationClearsStationaryScanMemory() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1, yaw: 45))
+        memory.insert(snapshot(time: 1.1, position: SIMD3(0.2, 1, 0)))
+        XCTAssertEqual(memory.count, 1)
+        XCTAssertEqual(memory.probe(SIMD3(-1.2, 1, -1), now: 1.1, turning: true), .unknown)
+    }
+    func testGradualTranslationIsComparedWithScanOriginNotLastFrame() {
+        var memory = ObstacleDepthMemory()
+        for i in 0...4 { memory.insert(snapshot(time: 1 + Double(i) * 0.1, position: SIMD3(Double(i) * 0.04, 1, 0))) }
+        XCTAssertEqual(memory.count, 1)
+    }
+    func testFrameStorageBoundAndBadTimestampReset() {
+        var memory = ObstacleDepthMemory()
+        for i in 0...30 { memory.insert(snapshot(time: 1 + Double(i) * 0.05)) }
+        XCTAssertEqual(memory.count, ObstacleDepthMemory.maximumFrames)
+        memory.insert(snapshot(time: 1))
+        XCTAssertEqual(memory.count, 0)
+    }
+    func testLongGapCannotUsePreviousScan() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(snapshot(time: 1, yaw: 45))
+        memory.insert(snapshot(time: 2))
+        XCTAssertEqual(memory.count, 1)
+    }
+    func testInvalidSnapshotDimensionsOrCameraBasisAreRejected() {
+        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(2, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
+            fx: 1, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: Array(repeating: 3, count: 9)))
+        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
+            fx: .nan, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: Array(repeating: 3, count: 9)))
+        XCTAssertNil(ObstacleDepthSnapshot(timestamp: 1, position: .zero, right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0), back: SIMD3(0, 0, 1),
+            fx: 1, fy: 1, cx: 0.5, cy: 0.5, width: 3, height: 3, depths: []))
+    }
+    func testOutOfRangeDepthNeverBuildsFreeSpace() {
+        XCTAssertTrue(snapshot(time: 1, depth: 8).hits.isEmpty)
+        XCTAssertEqual(snapshot(time: 1, depth: 8).probe(SIMD3(0, 1, -1)), .unknown)
+    }
+    // Analytic room fixture exercises the projection and near-space geometry
+    // together, not just a hand-filled array of "observed" flags. This is a
+    // synthetic camera, not a measured iPhone accuracy/FOV claim.
+    private func room(time: Double, yaw: Double = 0, pitch: Double = 0, wall: Double = 2.2, post: Double? = nil) -> ObstacleDepthSnapshot {
+        let yaw = yaw * .pi / 180, pitch = pitch * .pi / 180
+        let right = SIMD3(cos(yaw), 0, -sin(yaw))
+        let up = SIMD3(sin(yaw)*sin(pitch), cos(pitch), cos(yaw)*sin(pitch))
+        let back = SIMD3(sin(yaw)*cos(pitch), -sin(pitch), cos(yaw)*cos(pitch))
+        var depths: [Float] = []
+        for py in 0..<96 {
+            for px in 0..<96 {
+                let x = (Double(px) + 0.5) / 96 - 0.5
+                let y = (0.5 - (Double(py) + 0.5) / 96) / 0.65
+                let ray = right * x + up * y - back
+                var intersections: [Double] = []
+                if ray.z < -0.0001 { intersections.append(-wall / ray.z) }
+                if ray.x < -0.0001 { intersections.append(-3 / ray.x) }
+                if ray.x > 0.0001 { intersections.append(3 / ray.x) }
+                if ray.y < -0.0001 { intersections.append(-1 / ray.y) }
+                if ray.y > 0.0001 { intersections.append(1.5 / ray.y) }
+                if let post, ray.z < -0.0001 {
+                    let t = -post / ray.z
+                    let y = 1 + ray.y * t
+                    if abs(ray.x * t) <= 0.15 && y >= 0 && y <= 2.05 { intersections.append(t) }
+                }
+                depths.append(Float(intersections.min() ?? .nan))
+            }
+        }
+        return ObstacleDepthSnapshot(timestamp: time, position: SIMD3(0, 1, 0), right: right, up: up, back: back,
+            fx: 1, fy: 0.65, cx: 0.5, cy: 0.5, width: 96, height: 96, depths: depths)!
+    }
+    func testTwoMeterRoomProducesWarningWithoutRequiringAScan() {
+        var memory = ObstacleDepthMemory()
+        var guide = ObstacleGuide()
+        let pose = InspectionPose(position: SIMD3(0, 1, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
+        var result = ObstacleDecision.stop(.unknown)
+        for i in 0...3 {
+            let time = 1.45 + Double(i) * 0.1
+            memory.insert(room(time: time))
+            let probes = ObstacleGeometry.probes(.ahead).map { memory.probe(SIMD3($0.x, $0.y, -$0.z), now: time, turning: false) }
+            let points = memory.hits(now: time, turning: false).map { SIMD3($0.x, $0.y, -$0.z) }
+            let corridor = ObstacleCorridor(probes: probes, floorSupported: true,
+                                          nearestObstacle: ObstacleGeometry.obstacleRange(points, sector: .ahead))
+            XCTAssertFalse(corridor.isBlocked)
+            XCTAssertEqual(probes.filter { $0 == .observedBeyond }.count, 75, "Synthetic view must actually cover body probes")
+            result = guide.update([.ahead: corridor], pose: pose, floorLevel: 0, capturedAt: time, now: time)
+        }
+        XCTAssertEqual(result, .caution)
+        memory.insert(room(time: 1.85, wall: 0.7))
+        let probes = ObstacleGeometry.probes(.ahead).map { memory.probe(SIMD3($0.x, $0.y, -$0.z), now: 1.85, turning: false) }
+        let points = memory.hits(now: 1.85, turning: false).map { SIMD3($0.x, $0.y, -$0.z) }
+        let close = ObstacleCorridor(probes: probes, floorSupported: true,
+                                    nearestObstacle: ObstacleGeometry.obstacleRange(points, sector: .ahead))
+        XCTAssertEqual(guide.update([.ahead: close], pose: pose, floorLevel: 0, capturedAt: 1.85, now: 1.85), .stop(.noAlternative))
+    }
+    func testProjectedRoomFindsWiderTurnAroundCloseCentralObstacle() {
+        var memory = ObstacleDepthMemory()
+        memory.insert(room(time: 1, yaw: 50, wall: 3, post: 0.9))
+        var guide = ObstacleGuide()
+        let pose = InspectionPose(position: SIMD3(0, 1, 0), forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))!
+        let floor = [SIMD2<Double>(-3, -3), SIMD2(3, -3), SIMD2(3, 3), SIMD2(-3, 3)]
+        var result = ObstacleDecision.stop(.unknown)
+        for i in 0...5 {
+            let time = 1.1 + Double(i) * 0.1
+            memory.insert(room(time: time, wall: 3, post: 0.9))
+            let points = memory.hits(now: time, turning: true).map { SIMD3($0.x, $0.y, -$0.z) }
+            let paths = ObstacleGeometry.headings.map { degrees in
+                let probes = ObstacleGeometry.probes(degrees: degrees).map {
+                    memory.probe(SIMD3($0.x, $0.y, -$0.z), now: time, turning: degrees != 0)
+                }
+                let supported = ObstacleGeometry.groundChecks(degrees: degrees).allSatisfy {
+                    FloorBoundary.contains(SIMD2($0.x, -$0.z), vertices: floor)
+                }
+                return ObstaclePath(degrees: degrees, corridor: ObstacleCorridor(probes: probes, floorSupported: supported,
+                    nearestObstacle: ObstacleGeometry.obstacleRange(points, degrees: degrees)))
+            }
+            result = guide.update(paths, pose: pose, floorLevel: 0, capturedAt: time, now: time)
+        }
+        XCTAssertEqual(result, .turn(.left, degrees: 50))
     }
 }
