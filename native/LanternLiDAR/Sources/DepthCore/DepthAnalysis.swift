@@ -160,7 +160,10 @@ public struct DepthCue: Equatable, Sendable {
     public let urgent: Bool
     // Legacy close-ahead cues and experimental walking-mode STOP cues use the
     // pause prefix. Ordinary side/direction changes never cut another warning.
-    public var speechPriority: Int { key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0 }
+    public var speechPriority: Int {
+        if key.hasPrefix("pause:walk-stop-") { return 3 }
+        return key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0
+    }
     // These keys are emitted only after the sensor-independent guide has already
     // stabilized a direction; do not add a second speech debounce on top of it.
     public var hasConfirmedInspection: Bool { key.contains(":check-") }
@@ -189,11 +192,13 @@ public struct DepthSpeechPolicy {
             candidateSince = now
         }
         lastObserved = now
-        let escalates = cue.speechPriority == 2 && lastPriority < 2
+        let escalates = cue.speechPriority >= 2 && cue.speechPriority > lastPriority
+        let revokesMovement = cue.speechPriority == 3 && lastPriority < 3
         if speaking {
             // Repeat, low confidence, distance fluctuations and side switches
             // must not restart the sentence. One genuine escalation may.
-            guard !manual, escalates, now - lastTime >= 1, now - lastCloseWarningAt >= 6 else { return false }
+            guard !manual, escalates,
+                  revokesMovement || (now - lastTime >= 1 && now - lastCloseWarningAt >= 6) else { return false }
         }
         if !manual {
             let elapsed = now - lastTime
@@ -206,7 +211,7 @@ public struct DepthSpeechPolicy {
         lastKey = cue.key
         lastTime = now
         lastPriority = cue.speechPriority
-        if cue.speechPriority == 2 { lastCloseWarningAt = now }
+        if cue.speechPriority >= 2 { lastCloseWarningAt = now }
         return true
     }
 }

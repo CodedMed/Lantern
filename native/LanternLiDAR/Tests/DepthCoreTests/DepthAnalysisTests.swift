@@ -809,4 +809,30 @@ final class ObstacleGuidanceTests: XCTestCase {
         XCTAssertFalse(ObstacleDecision.turn(.right).cue.speech.contains("phone"))
         XCTAssertFalse(ObstacleDecision.ahead.cue.speech.contains("safe"))
     }
+    func testNewStopImmediatelyRevokesAnActiveTurnWithoutRepeatingItself() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.turn(.left).cue, now: 1, speaking: false))
+        let stop = ObstacleDecision.stop(.unknown).cue
+        XCTAssertTrue(policy.shouldSpeak(stop, now: 1.05, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(stop, now: 1.1, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.2, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(ObstacleDecision.turn(.right).cue, now: 1.3, speaking: true))
+    }
+    func testStopRevokesForwardSpeechWithoutWaitingForRoutineCooldown() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.ahead.cue, now: 1, speaking: false, manual: true))
+        XCTAssertTrue(policy.shouldSpeak(ObstacleDecision.stop(.obstacle).cue, now: 1.01, speaking: true))
+    }
+    func testGradualHeadingChangeCannotRetainOldForwardRecommendation() {
+        var guide = ObstacleGuide()
+        _ = settle(&guide, [.ahead: observed])
+        var rechecked = false
+        for i in 1...6 {
+            let angle = Double(i * 2) * .pi / 180
+            let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle), 0, -cos(angle)), up: SIMD3(0, 1, 0))!
+            let stamp = 1.8 + Double(i) * 0.1
+            if guide.update([.ahead: observed], pose: rotated, floorLevel: 0, capturedAt: stamp, now: stamp) == .stop(.recheck) { rechecked = true }
+        }
+        XCTAssertTrue(rechecked)
+    }
 }

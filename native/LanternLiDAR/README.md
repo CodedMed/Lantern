@@ -132,7 +132,11 @@ Processing remains bounded to at most 10 Hz with no retained ARFrames, RGB
 uploads, paid API or utterance backlog. These are scheduling/algorithm constants,
 **not measured response time, FPS or accuracy claims**. Normal messages finish;
 a new walking-mode STOP may interrupt lower-priority speech through the existing
-bounded escalation policy. Direction changes never repeatedly cut a STOP sentence.
+escalation policy. A walking-mode STOP specifically revokes an active heading/turn
+instruction **without** the legacy one-second/six-second interruption cooldown:
+finishing an obsolete movement instruction would be unsafe. Once a STOP sentence
+is playing, routine direction/reason changes do not repeatedly cut it off. This
+exception is deliberate; smooth audio must not preserve a withdrawn turn command.
 
 The tests use synthetic space/depth cases, not a clinical or mobility evaluation.
 Sparse samples, unobserved near-foot/overhead areas, glass, classification errors

@@ -58,7 +58,7 @@ private struct LidarScreen: View {
                         Text("Voice speed")
                     } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
                         .tint(.black)
-                    Text("Messages finish before ordinary updates. A new STOP warning may interrupt. VoiceOver voice and speed settings take precedence when enabled.")
+                    Text("Ordinary updates finish sentences. A walking-mode STOP cancels an obsolete movement instruction immediately. VoiceOver voice and speed settings take precedence when enabled.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 DisclosureGroup("How to read the distances") {

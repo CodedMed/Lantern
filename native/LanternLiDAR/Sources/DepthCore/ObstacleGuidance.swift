@@ -175,6 +175,10 @@ public struct ObstacleGuide {
         if case .turn = proposed, let anchor, !pose.matches(anchor) {
             clearCandidate(); return .stop(.obstacle)
         }
+        if proposed == .ahead, let anchor {
+            let dot = pose.forward.x * anchor.forward.x + pose.forward.y * anchor.forward.y + pose.forward.z * anchor.forward.z
+            if dot < cos(10 * .pi / 180) { clearCandidate(); return .stop(.recheck) }
+        }
         count = min(count + 1, 4)
         guard count >= 4, capturedAt - since >= (proposed == .ahead ? 0.5 : 0.6) else {
             if case .turn = proposed { return .stop(.obstacle) }
