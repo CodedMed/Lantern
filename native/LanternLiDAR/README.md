@@ -52,7 +52,7 @@ Render website. The existing web app and legacy Expo app are preserved.
   sentence. Only an escalation to a close-ahead warning can interrupt lower-priority
   speech, bounded to avoid repeated interruptions during level oscillation.
 - Keeps only current-frame speech context, not an utterance backlog. Requires a
-  brief stable cue (0.45 s ordinary / 0.8 s unknown), uses an actual synthesis
+  brief stable cue (0.45 s unconfirmed ordinary / 0.8 s unknown), uses an actual synthesis
   completion callback and a 0.8 s gap, and can remind persistent context after
   12 seconds. Close-ahead escalations do not wait for stability. These are UX
   heuristics, not validated safety response times. Visual meters still clear
@@ -84,9 +84,16 @@ phone-relative regions to inspect while stationary, not navigation commands.
 - Requires an upright portrait view, aiming within 25° of level; restarts the
   comparison after more than 12 cm translation or 10° rotation from the reference
   view. These pose checks reduce mixing scenes; they do not detect walking reliably.
-- A candidate must persist for at least 0.8 s across at least five distinct
-  frames, without a gap longer than 0.5 s. Raw current-frame distances determine
-  eligibility, so display smoothing cannot preserve a now-ineligible side.
+- Normally a candidate must persist for at least 0.8 s across five distinct
+  frames, without a gap longer than 0.5 s. A **strong-reading fast path** requires
+  at least 0.35 s and four distinct frames: every contributing frame must have
+  >=80% coverage in all regions, each region's range variation <=0.2 m, and
+  stronger margins. A side needs >=2 m range, >=1 m advantage over ahead and
+  >=0.8 m over the opposite side; ahead needs >=2.25 m with both sides >=1.25 m.
+  These are acquisition thresholds, **not measured end-to-end response times or
+  accuracy percentages**. Other usable readings still take the normal path.
+  Raw current-frame distances determine eligibility, so display smoothing
+  cannot preserve a now-ineligible side.
 - Prefers inspecting ahead if its supported surface is at least 1.75 m away and
   neither side has a supported surface closer than 0.75 m. Otherwise, a side
   needs a surface at least 1.75 m away, at least 0.6 m farther than ahead, and
@@ -95,8 +102,19 @@ phone-relative regions to inspect while stationary, not navigation commands.
   floor, excessive tilt, or a changed view immediately withdraw the visual choice.
   Reversals must settle again; the previous direction is not held through uncertainty.
 - Close-ahead warnings still start without waiting for direction acquisition.
-  Ordinary direction changes keep the sentence-completion policy described above;
-  the already-playing spoken snapshot can briefly differ from the live panel.
+  Short prompts put the action first ("Pause. Check right with the phone."). A
+  direction that has already stabilized does not wait through a second voice
+  debounce or the ordinary three-second start cooldown; it still waits for the
+  current sentence and the 0.8 s completion gap. No ordinary change cuts speech.
+  The already-playing spoken snapshot can briefly differ from the live panel.
+
+The large advice card and Start/Stop/Repeat controls are above the preview and
+distances, not hidden below the camera. Full reasons are in "Why this advice?".
+This makes the recommendation easier to find without inventing certainty.
+Primary direction prompts stay brief; **Distances** reads all three current
+surface measurements on demand, including Unknown. Like Repeat, it never cuts
+off a sentence already playing. It rechecks freshness at the tap and does not
+queue an old distance readout.
 
 All thresholds above are **unvalidated engineering heuristics**, not measured
 error bounds, clinically established margins, or a collision-avoidance guarantee.
@@ -155,10 +173,11 @@ with intermittent Unknown readings. This confirms a basic live-depth interaction
 checklist below still needs systematic physical testing; automated tests cannot
 replace it.
 
-Audio smoke test: the user reported that the updated iPhone speech is clearer and
-sentences finish. This is user feedback, not an accessibility study. The direction
-comparison update requires a separate physical smoke test; automated checks alone
-do not confirm its sensor behavior.
+Audio/direction smoke test: the user reported clearer, complete iPhone speech and
+confirmed that the initial direction panel and speech work. This is user feedback,
+not an accessibility study or proof of safe route selection. The subsequent larger
+advice card, adaptive fast acquisition and shorter prompts need a separate physical
+check; automated tests alone do not confirm their sensor behavior or response time.
 
 While stationary (with a sighted helper if needed):
 

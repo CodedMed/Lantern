@@ -161,6 +161,9 @@ public struct DepthCue: Equatable, Sendable {
     // Uncertainty and side changes are cautions, not reasons to cut off another
     // warning. Only a new close-ahead warning may interrupt lower-priority speech.
     public var speechPriority: Int { key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0 }
+    // These keys are emitted only after the sensor-independent guide has already
+    // stabilized a direction; do not add a second speech debounce on top of it.
+    public var hasConfirmedInspection: Bool { key.contains(":check-") }
 }
 
 /// Latest-frame speech scheduling, not a safety guarantee. No utterance backlog:
@@ -193,11 +196,11 @@ public struct DepthSpeechPolicy {
         }
         if !manual {
             let elapsed = now - lastTime
-            let settle = cue.key == "unknown" ? 0.8 : escalates ? 0 : 0.45
+            let settle = cue.hasConfirmedInspection ? 0 : cue.key == "unknown" ? 0.8 : escalates ? 0 : 0.45
             guard now - candidateSince >= settle else { return false }
             guard escalates || now - finishedAt >= 0.8 else { return false }
             guard cue.key != lastKey || elapsed >= 12 else { return false }
-            guard escalates || elapsed >= 3 else { return false }
+            guard escalates || cue.hasConfirmedInspection || elapsed >= 3 else { return false }
         }
         lastKey = cue.key
         lastTime = now
@@ -306,12 +309,16 @@ public struct InspectionPose: Sendable {
 public struct DepthInspectionGuide {
     public static let settlingTime = 0.8
     public static let minimumSamples = 5
+    public static let fastSettlingTime = 0.35
+    public static let fastMinimumSamples = 4
     private var lastTimestamp: Double?
     private var lastNow: Double?
     private var candidate: Sector?
     private var candidateSince = -Double.infinity
     private var samples = 0
     private var anchor: InspectionPose?
+    private var fastEligible = false
+    private var ranges: [Sector: ClosedRange<Double>] = [:]
     public init() {}
     public mutating func reset() { self = DepthInspectionGuide() }
 
@@ -350,12 +357,33 @@ public struct DepthInspectionGuide {
         }
         if candidate != proposed {
             candidate = proposed; candidateSince = capturedAt; samples = 0
+            ranges = [:]; fastEligible = true
         }
         samples = min(samples + 1, Self.minimumSamples)
-        guard samples >= Self.minimumSamples, capturedAt - candidateSince >= Self.settlingTime else { return .settling }
+        for (sector, value) in [(Sector.left, left), (.ahead, ahead), (.right, right)] {
+            let previous = ranges[sector] ?? (value...value)
+            ranges[sector] = min(previous.lowerBound, value)...max(previous.upperBound, value)
+        }
+        let strongSeparation: Bool
+        switch proposed {
+        case .ahead: strongSeparation = ahead >= 2.25 && min(left, right) >= 1.25
+        case .left: strongSeparation = left >= 2 && left >= ahead + 1 && left >= right + 0.8
+        case .right: strongSeparation = right >= 2 && right >= ahead + 1 && right >= left + 0.8
+        }
+        // An adaptive fast path, not fake certainty: every contributing frame
+        // needs stronger coverage, larger margins and <= 0.2 m range variation.
+        fastEligible = fastEligible && strongSeparation
+            && Sector.allCases.allSatisfy { (readings[$0]?.coverage ?? 0) >= 0.8 }
+            && ranges.values.allSatisfy { $0.upperBound - $0.lowerBound <= 0.2 }
+        let age = capturedAt - candidateSince
+        let ready = fastEligible && samples >= Self.fastMinimumSamples && age >= Self.fastSettlingTime
+            || samples >= Self.minimumSamples && age >= Self.settlingTime
+        guard ready else { return .settling }
         return .check(proposed)
     }
-    private mutating func clearCandidate() { candidate = nil; samples = 0; candidateSince = -.infinity }
+    private mutating func clearCandidate() {
+        candidate = nil; samples = 0; candidateSince = -.infinity; ranges = [:]; fastEligible = false
+    }
 }
 
 public enum DepthGuidance {
@@ -369,19 +397,30 @@ public enum DepthGuidance {
         let closeSide = [Sector.left, .right].first { (readings[$0]?.meters ?? .infinity) < 0.75 }
         if ahead < 1.25 {
             let check = inspection?.speech ?? "Check around you."
-            return DepthCue(title: "Pause and check", detail: "\(text) \(check) This is not a verified walking route.", speech: "Pause. \(text) \(check)", key: "pause:\(check):\(Int((ahead * 2).rounded()))", urgent: true)
+            let spoken = inspection?.target != nil ? "Pause. \(check)" : "Pause. Surface close ahead."
+            // Short mode speaks the action, not changing decimal distances.
+            // Do not repeat the same direction just for a distance-bin wobble.
+            let context = inspection?.key ?? "nearby:\(Int((ahead * 2).rounded()))"
+            return DepthCue(title: "Pause and check", detail: "\(text) \(check) This is not a verified walking route.", speech: spoken, key: "pause:\(context)", urgent: true)
         }
         if let side = closeSide {
             return DepthCue(title: "Surface close on \(side.rawValue)", detail: "Pause and inspect around you. Other hazards may be missed.", speech: "Pause. Surface close on your \(side.rawValue). \(inspection?.speech ?? "")", key: "side:\(side.rawValue):\(inspection?.key ?? "")", urgent: true)
         }
         if let inspection {
-            let distance = inspection.target.flatMap { readings[$0]?.meters }.map {
-                String(format: " Surface about %.1f meters.", $0)
-            } ?? ""
             return DepthCue(title: inspection.title, detail: inspection.detail,
-                            speech: "Pause. \(inspection.speech)\(distance)", key: "inspection:\(inspection.key)", urgent: inspection.target == nil)
+                            speech: "Pause. \(inspection.speech)", key: "inspection:\(inspection.key)", urgent: inspection.target == nil)
         }
         return DepthCue(title: readings[.ahead]?.label ?? "Distance unknown", detail: "Surface depth, not a guarantee of clearance. Check before moving.", speech: text, key: "ahead:\(Int((ahead * 2).rounded()))", urgent: false)
+    }
+    public static func distanceReadout(_ readings: [Sector: SectorReading]) -> DepthCue {
+        let text = Sector.allCases.map { sector in
+            if let meters = readings[sector]?.meters {
+                return String(format: "\(sector.rawValue.capitalized), about %.1f meters.", meters)
+            }
+            return "\(sector.rawValue.capitalized), unknown."
+        }.joined(separator: " ")
+        return DepthCue(title: "Current surface distances", detail: "Distances are not path clearance.",
+                        speech: text, key: "manual-distances", urgent: false)
     }
 }
 

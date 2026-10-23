@@ -22,7 +22,7 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
             if !voiceEnabled { stopSpeech() }
             else {
                 speechPolicy = DepthSpeechPolicy()
-                if running { say(cue, manual: true) }
+                if running { repeatCue() }
             }
         }
     }
@@ -145,7 +145,22 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         if CACurrentMediaTime() - startedAt >= 1 { say(cue) }
     }
 
-    func repeatCue() { say(cue, manual: true) }
+    func repeatCue() {
+        revalidateManualReadout()
+        say(cue, manual: true)
+    }
+    func readDistances() {
+        revalidateManualReadout()
+        say(DepthGuidance.distanceReadout(readings), manual: true)
+    }
+    private func revalidateManualReadout() {
+        guard let stamp = lastReceived, DepthAnalysis.isFresh(capturedAt: stamp, now: CACurrentMediaTime()) else {
+            // A button tap must not use an old direction while waiting for the
+            // next expiry-timer tick. Do not interrupt an active sentence.
+            clearReadings(stopSpeech: false)
+            return
+        }
+    }
 
     private func stopSpeech() {
         activeUtterance = nil

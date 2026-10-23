@@ -18,6 +18,10 @@ private struct LidarScreen: View {
                     Spacer()
                     Text("LiDAR prototype").font(.caption).foregroundStyle(.secondary)
                 }
+                if sensor.running { adviceCard }
+                controls
+                Text(sensor.status).font(.caption).foregroundStyle(.secondary)
+                distanceCards
                 ZStack {
                     SensorPreview(sensor: sensor)
                     if !sensor.running {
@@ -39,46 +43,6 @@ private struct LidarScreen: View {
                         }.allowsHitTesting(false)
                     }
                 }.aspectRatio(0.85, contentMode: .fit).clipped().accessibilityLabel("Rear-camera preview with left, ahead and right sampling regions")
-                Text(sensor.status).font(.caption).foregroundStyle(.secondary)
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(Sector.allCases, id: \.self) { sector in
-                        VStack(spacing: 8) {
-                            Text(sector.rawValue.capitalized).font(.caption)
-                            Text(sensor.running ? (sensor.readings[sector]?.label ?? "Unknown") : "—").font(.headline).minimumScaleFactor(0.7)
-                            Text(sensor.running ? (sensor.readings[sector]?.explanation ?? "Waiting for fresh depth") : "Camera off")
-                                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        }.frame(maxWidth: .infinity, alignment: .top).padding(8).frame(maxHeight: .infinity, alignment: .top)
-                            .overlay(Rectangle().stroke(.gray.opacity(0.3)))
-                            .accessibilityElement(children: .combine)
-                            .accessibilityIdentifier("distance-\(sector.rawValue)")
-                    }
-                }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
-                if !sensor.running || sensor.cue.speechPriority == 2 || sensor.cue.key.hasPrefix("side:") || sensor.cue.key == "unknown" {
-                    Text(sensor.running ? sensor.cue.title : "Camera off").font(.title2.bold())
-                    Text(sensor.running ? sensor.cue.detail : "Point at your surroundings. Measurements come from ARKit's LiDAR depth feed, not assumed object sizes.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                if sensor.running {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Direction to inspect · not a walking route").font(.caption.bold())
-                        Label(sensor.inspection.title, systemImage: inspectionSymbol).font(.headline)
-                        Text(sensor.inspection.detail).font(.subheadline)
-                        Text("Pause before checking. Left/right are relative to where the phone points. Stairs, glass, body clearance and hazards outside the view are not verified.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.4)))
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("inspection-guidance")
-                    // Deliberately not a live region: app speech handles changes;
-                    // VoiceOver users can read this without competing announcements.
-                }
-                HStack(spacing: 12) {
-                    Button(sensor.running ? "Stop" : "Start LiDAR") {
-                        if sensor.running { sensor.stop() } else { sensor.start() }
-                    }.buttonStyle(.borderedProminent).disabled(!sensor.supported || sensor.requestingPermission)
-                    Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
-                        .accessibilityHint("Repeats current guidance when the voice is idle. Does not restart a sentence already playing.")
-                }.controlSize(.large).tint(.black)
                 Toggle("Short voice alerts", isOn: $sensor.voiceEnabled).tint(.black)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Voice speed").font(.subheadline)
@@ -107,6 +71,62 @@ private struct LidarScreen: View {
                 else if newPhase == .background || !sensor.requestingPermission { sensor.stop() }
             }
             .onDisappear { sensor.stop() }
+    }
+    private var adviceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PAUSE · DIRECTION TO INSPECT").font(.caption.bold())
+            HStack(alignment: .center, spacing: 16) {
+                Image(systemName: inspectionSymbol).font(.system(size: 48, weight: .bold))
+                    .accessibilityHidden(true)
+                Text(sensor.inspection.target.map { "CHECK \($0.rawValue.uppercased())" } ?? sensor.inspection.title)
+                    .font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
+            }
+            if sensor.cue.speechPriority == 2 {
+                Text("Surface close ahead · \(sensor.readings[.ahead]?.label ?? "Unknown")").font(.subheadline.bold())
+            } else if sensor.cue.key.hasPrefix("side:") {
+                Text(sensor.cue.title).font(.subheadline.bold())
+            }
+            Text(sensor.inspection.target == nil ? sensor.inspection.detail : "Check with the phone, not a step instruction. Readings support an inspection, not a verified walking route.")
+                .font(.subheadline)
+            DisclosureGroup("Why this advice?") {
+                Text(sensor.inspection.detail).font(.caption).padding(.top, 4)
+            }.font(.caption)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            .background(.black).foregroundStyle(.white).tint(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("inspection-guidance")
+        // Not a live region: app speech handles changes without duplicate alerts.
+    }
+    private var controls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { controlButtons }
+            VStack(alignment: .leading, spacing: 12) { controlButtons }
+        }.controlSize(.large).tint(.black)
+    }
+    @ViewBuilder private var controlButtons: some View {
+        Button(sensor.running ? "Stop" : "Start LiDAR") {
+            if sensor.running { sensor.stop() } else { sensor.start() }
+        }.buttonStyle(.borderedProminent).disabled(!sensor.supported || sensor.requestingPermission)
+        Button("Repeat") { sensor.repeatCue() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
+            .accessibilityHint("Repeats current guidance when the voice is idle. Does not restart a sentence already playing.")
+        Button("Distances") { sensor.readDistances() }.buttonStyle(.bordered).disabled(!sensor.running || !sensor.voiceEnabled)
+            .accessibilityHint("Reads the current left, ahead and right surface distances when the voice is idle.")
+    }
+    private var distanceCards: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ForEach(Sector.allCases, id: \.self) { sector in
+                VStack(spacing: 8) {
+                    Text(sector.rawValue.capitalized).font(.caption)
+                    Text(sensor.running ? (sensor.readings[sector]?.label ?? "Unknown") : "—").font(.headline).minimumScaleFactor(0.7)
+                    Text(sensor.running ? (sensor.readings[sector]?.explanation ?? "Waiting for fresh depth") : "Camera off")
+                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.frame(maxWidth: .infinity, alignment: .top).padding(8).frame(maxHeight: .infinity, alignment: .top)
+                    .overlay(Rectangle().stroke(.gray.opacity(0.3)))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("distance-\(sector.rawValue)")
+            }
+        }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .contain)
     }
     private var inspectionSymbol: String {
         switch sensor.inspection.target {

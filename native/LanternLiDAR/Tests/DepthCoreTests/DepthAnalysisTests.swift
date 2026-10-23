@@ -513,4 +513,76 @@ final class DepthAnalysisTests: XCTestCase {
             }
         }
     }
+    func testStrongSteadyReadingsCanConfirmOnFastPath() {
+        var guide = DepthInspectionGuide()
+        for stamp in [1.0, 1.12, 1.24] {
+            XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: stamp, now: stamp), .settling)
+        }
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1.36, now: 1.36), .check(.right))
+    }
+    func testFastPathDoesNotRelaxCoverageOrSeparation() {
+        for input in [scene(coverage: 0.79), scene(1, 0.8, 1.9), scene(2.3, 0.8, 3)] {
+            var guide = DepthInspectionGuide()
+            for stamp in [1.0, 1.12, 1.24, 1.36, 1.48] {
+                XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: stamp, now: stamp), .settling)
+            }
+            XCTAssertEqual(guide.update(input, floorKnown: true, pose: uprightPose, capturedAt: 1.9, now: 1.9), .check(.right))
+        }
+    }
+    func testVariableDistancesFallBackToNormalSettling() {
+        var guide = DepthInspectionGuide()
+        for (i, right) in [3.0, 3.4, 3.0, 3.4, 3.0].enumerated() {
+            let stamp = 1 + Double(i) * 0.12
+            XCTAssertEqual(guide.update(scene(1, 0.8, right), floorKnown: true, pose: uprightPose, capturedAt: stamp, now: stamp), .settling)
+        }
+        XCTAssertEqual(guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: 1.9, now: 1.9), .check(.right))
+    }
+    func testFastPathStillWithdrawsImmediatelyAfterLossOrReversal() {
+        var guide = DepthInspectionGuide()
+        for stamp in [1.0, 1.12, 1.24, 1.36] {
+            _ = guide.update(scene(), floorKnown: true, pose: uprightPose, capturedAt: stamp, now: stamp)
+        }
+        XCTAssertEqual(guide.update(scene(3, 0.8, 1), floorKnown: true, pose: uprightPose, capturedAt: 1.48, now: 1.48), .settling)
+        var lost = scene(); lost[.left] = .unknown
+        XCTAssertEqual(guide.update(lost, floorKnown: true, pose: uprightPose, capturedAt: 1.6, now: 1.6), .missingDepth)
+    }
+    func testConfirmedDirectionSkipsDoubleDebounceButKeepsCompletionGap() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 1, speaking: false))
+        let confirmed = DepthGuidance.cue(scene(), floorKnown: true, inspection: .check(.right))
+        XCTAssertFalse(policy.shouldSpeak(confirmed, now: 1.4, speaking: true))
+        policy.didFinish(at: 1.5)
+        XCTAssertFalse(policy.shouldSpeak(confirmed, now: 2, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(confirmed, now: 2.31, speaking: false)) // No extra 3-second start cooldown.
+    }
+    func testCloseWarningsAndConfirmedDirectionsAreShortActionFirstPrompts() {
+        let pending = DepthGuidance.cue(scene(), floorKnown: true, inspection: .settling)
+        let ready = DepthGuidance.cue(scene(), floorKnown: true, inspection: .check(.right))
+        XCTAssertEqual(pending.speech, "Pause. Surface close ahead.")
+        XCTAssertEqual(ready.speech, "Pause. Check right with the phone.")
+        XCTAssertLessThanOrEqual(ready.speech.split(separator: " ").count, 8)
+    }
+    func testDistanceDetailsAreOnDemandAndKeepUnknownRegionsUnknown() {
+        var input = scene(); input[.left] = .unknown
+        XCTAssertEqual(DepthGuidance.distanceReadout(input).speech,
+                       "Left, unknown. Ahead, about 0.8 meters. Right, about 3.0 meters.")
+        XCTAssertEqual(DepthGuidance.distanceReadout([:]).speech,
+                       "Left, unknown. Ahead, unknown. Right, unknown.")
+    }
+    func testOnDemandDistancesNeverCutOffCurrentSpeech() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(closeCue, now: 1, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(DepthGuidance.distanceReadout(scene()), now: 1.5, speaking: true, manual: true))
+        policy.didFinish(at: 2)
+        XCTAssertTrue(policy.shouldSpeak(DepthGuidance.distanceReadout(scene()), now: 2.1, speaking: false, manual: true))
+    }
+    func testConfirmedActionDoesNotRepeatForDecimalDistanceWobble() {
+        let first = DepthGuidance.cue(scene(1, 0.8, 3), floorKnown: true, inspection: .check(.right))
+        let changed = DepthGuidance.cue(scene(1, 0.7, 3), floorKnown: true, inspection: .check(.right))
+        XCTAssertEqual(first.key, changed.key)
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(first, now: 1, speaking: false))
+        policy.didFinish(at: 2)
+        XCTAssertFalse(policy.shouldSpeak(changed, now: 3, speaking: false))
+    }
 }
