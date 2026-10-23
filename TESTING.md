@@ -11,6 +11,12 @@
   12-second prominent-object reminders.
 - Physical phone camera/voice checks remain necessary; no phone performance or
   safe navigation capability is claimed by the automated tests.
+- With explicit user permission, a real local computer webcam was tested: live
+  video and central-person recognition worked; Pause removed overlays; Resume
+  restored detection; camera switching/restart worked; mute persisted across a
+  restart; Stop returned to Camera off with zero video elements or overlays.
+  No camera screenshots or recordings were saved. This is not a physical-phone
+  test or confirmation that two distinct cameras were available on that computer.
 
 ## Automated
 
