@@ -221,6 +221,7 @@ function App() {
       scan: () => capture(),
       onResult: (result) => receive(result),
       onError: () => {
+        rangeTracker.current.suspend();
         setFrame(null);
         setPaused(true);
         narratorRef.current.stop();
@@ -287,14 +288,18 @@ function App() {
     narratorRef.current.stop();
     if (modal !== "distance") {
       setFrame(null);
-      rangeTracker.current.reset();
+      rangeTracker.current.suspend();
+      setCue({
+        title: "Checking view…",
+        detail: "Live readings paused. Saved calibration is kept.",
+      });
     }
   }, [modal]);
   useEffect(() => {
     if (!frame || source.type !== "camera") return;
     const timer = setTimeout(
       () => {
-        rangeTracker.current.reset();
+        rangeTracker.current.suspend();
         setFrame(null);
         setCue({
           title: "Waiting for a fresh view.",
@@ -464,7 +469,7 @@ function App() {
       !isFreshFrame(result.capturedAt, performance.now())
     ) {
       setFrame(null);
-      rangeTracker.current.reset();
+      rangeTracker.current.suspend();
       setCue({
         title: "Detection is catching up.",
         detail: "Hold still. Do not rely on delayed results.",
@@ -507,7 +512,7 @@ function App() {
   function togglePause() {
     narratorRef.current.stop();
     filter.current.reset();
-    rangeTracker.current.reset();
+    rangeTracker.current.suspend();
     setFrame(null);
     setError("");
     setPaused((current) => !current);
@@ -557,6 +562,22 @@ function App() {
       setRangeError(cause.message);
     }
   }
+  function resumeSavedDistance(id) {
+    if (state.current.source.type !== "camera" || state.current.paused) return;
+    try {
+      rangeTracker.current.resume(Number(id), performance.now());
+      setFrame(null);
+      setCue({
+        title: "Checking the same object…",
+        detail: "Restoring your saved calibration, without remeasuring.",
+      });
+      setRangeError("");
+      setModal(null);
+    } catch (cause) {
+      setRangeError(cause.message);
+      setModal("distance");
+    }
+  }
   function changeModel(value) {
     const next = sanitizeSettings({ ...settings, model: value });
     try {
@@ -595,7 +616,7 @@ function App() {
       : modelError
         ? "Detector unavailable"
         : activeCamera
-          ? paused || modal
+          ? paused || (modal && modal !== "distance")
             ? "Detection paused"
             : frame
               ? "Live detection"
@@ -614,6 +635,14 @@ function App() {
     rangeTracker.current.canCalibrate(item.trackId, performance.now()),
   );
   const rangedObject = frame?.detections.find((item) => item.range);
+  const savedReference = rangeTracker.current.reference;
+  const resumeTargets =
+    activeCamera && !paused
+      ? (frame?.detections || []).filter((item) =>
+          rangeTracker.current.canResume(item.trackId, performance.now()),
+        )
+      : [];
+  const recoveringRange = activeCamera && savedReference && !rangedObject;
 
   return (
     <main className={`app ${settings.largeText ? "large-text" : ""}`}>
@@ -758,8 +787,8 @@ function App() {
           <span>
             {rangedObject
               ? `${roomLabel(rangedObject.class)}: ${rangedObject.range.label} (rough)`
-              : rangeTracker.current.status.includes("Recalibrate")
-                ? rangeTracker.current.status
+              : savedReference
+                ? `${roomLabel(savedReference.class)} calibration saved`
                 : cue.proximity || "Distance unknown"}
           </span>
           <button
@@ -767,9 +796,44 @@ function App() {
             disabled={paused}
             aria-label="Calibrate distance"
           >
-            Set distance
+            {savedReference ? "Distance setup" : "Set distance"}
           </button>
         </div>
+        {recoveringRange && (
+          <div className="range-recovery">
+            <p role="status">
+              {paused
+                ? "Live distance paused. Your calibration is saved."
+                : rangeTracker.current.status}
+            </p>
+            {savedReference.id === null && !paused && (
+              <>
+                <p>
+                  Point at the same {roomLabel(savedReference.class)} and hold
+                  still. Confirm it to resume without measuring again.
+                </p>
+                {resumeTargets.length === 1 ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      resumeSavedDistance(resumeTargets[0].trackId)
+                    }
+                  >
+                    Yes, same {roomLabel(savedReference.class)} — resume
+                  </button>
+                ) : resumeTargets.length > 1 ? (
+                  <button type="button" onClick={openDistance}>
+                    Choose the same {roomLabel(savedReference.class)}
+                  </button>
+                ) : (
+                  <p className="note">
+                    Waiting for a stable, centered view of the whole object.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
         {error && (
           <p className="error" role="alert">
             {error}
@@ -903,6 +967,71 @@ function App() {
                   calibrate a real distance.
                 </p>
               )}
+              {savedReference && (
+                <section
+                  className="saved-reference"
+                  aria-label="Saved calibration"
+                >
+                  <h3>{roomLabel(savedReference.class)} calibration saved</h3>
+                  <p>
+                    No need to measure again. If this is the same stationary
+                    object, select it below and confirm. The old size reference
+                    is reused to estimate the current range; the old meter
+                    reading is not simply restored.
+                  </p>
+                  {savedReference.id === null ? (
+                    <>
+                      <label className="setting">
+                        Same object
+                        <select
+                          aria-label="Same object for saved calibration"
+                          value={rangeTarget}
+                          onChange={(event) =>
+                            setRangeTarget(event.target.value)
+                          }
+                        >
+                          <option value="">Choose the same object</option>
+                          {resumeTargets.map((item) => (
+                            <option key={item.trackId} value={item.trackId}>
+                              {roomLabel(item.class)} · center-
+                              {(item.bbox[1] + item.bbox[3]) / 2 < 0.5
+                                ? "left"
+                                : "right"}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="test-voice"
+                        disabled={
+                          !resumeTargets.some(
+                            (item) => item.trackId === Number(rangeTarget),
+                          )
+                        }
+                        onClick={() => resumeSavedDistance(rangeTarget)}
+                      >
+                        Confirm same object — resume saved range
+                      </button>
+                      {!resumeTargets.length && (
+                        <p className="note">
+                          Center the whole {roomLabel(savedReference.class)} at
+                          the original angle and hold still.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="note">
+                      {rangeTracker.current.status} Brief tracking interruptions
+                      recover automatically when the same track is stable again.
+                    </p>
+                  )}
+                  <p className="note">
+                    Use a new measurement below only for a different object or a
+                    changed lens/view.
+                  </p>
+                </section>
+              )}
               <label className="setting">
                 Tracked object
                 <select
@@ -986,12 +1115,15 @@ function App() {
                 Clear calibration
               </button>
               <p className="note">
-                Estimates apply only while this uninterrupted geometric track
-                remains valid. Occlusion, zoom, rotation, a changed camera/view,
-                a missed detection, or a similar-looking replacement can
-                invalidate the estimate. It does not identify individual objects
-                or detect every zoom, angle change, or object swap. Never use
-                the number to decide whether a route is safe.
+                Your measurement stays saved during this camera session even
+                when the object leaves the frame. Live meters disappear while
+                tracking is uncertain. Brief dropouts recover after stable
+                frames; longer losses require confirming the same object, not
+                remeasuring. Stopping/switching the camera, changing
+                orientation, or reloading clears the reference. This is not
+                identity recognition: it cannot detect every zoom, angle change,
+                or object swap. Never use the number to decide whether a route
+                is safe.
               </p>
             </form>
           ) : modal === "settings" ? (
@@ -1110,9 +1242,11 @@ function App() {
                 larger/smaller in view; this is not measured motion or depth.
                 Optional distance setup uses a known measured range and the size
                 ratio of the same stationary object. It rounds estimates to 0.5
-                m, rejects inconsistent views, and requires recalibration after
-                tracking loss. Accuracy is not validated, and other objects
-                remain unmeasured.
+                m and withholds readings for inconsistent views. The measured
+                reference survives tracking loss, pause, and settings; confirm
+                the same object to resume after a longer loss without
+                remeasuring. Accuracy is not validated, and other objects remain
+                unmeasured.
               </p>
               <p>
                 Recognition runs in this browser. Images are not uploaded. The

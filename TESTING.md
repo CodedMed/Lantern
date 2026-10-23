@@ -86,3 +86,28 @@ be significantly slower. Confidence is a model score, not measured accuracy.
   substitutions, and safe navigation have **not** been validated. Ranging is
   explicitly marked rough/unvalidated and cannot serve as collision avoidance.
 - No private camera frames were recorded or uploaded for this revision.
+
+## Calibration persistence fix
+
+- Root cause reproduced in the old code: every missing detection permanently
+  deleted the reference; Pause, Settings/About, and stale-frame handling also
+  reset it. Calibration is now separate from the transient live range.
+- **65 automated tests pass**. Added leave/return after several seconds, two-frame
+  short-dropout recovery, no meter reading while absent, stale/incorrect/ambiguous
+  candidate rejection, pause/settings suspension, explicit clearing, multiple
+  candidate selection, and return at a different apparent size. The latter
+  verifies that restoration uses the original pinhole reference rather than
+  incorrectly copying the last meter reading to the new position.
+- Dormant geometric tracks last at most 800 ms. Longer/ambiguous losses preserve
+  the measurement but require explicit same-object confirmation; class labels
+  alone never silently reattach a saved reference after a full loss.
+- Five-sample median smoothing and modest calibration-box jitter tolerance are
+  implementation changes, not measured improvements in physical range accuracy.
+- Calibration eligibility now lasts up to 1.2 seconds from capture, within the
+  UI's existing 1.4-second frame expiry, rather than expiring at 450 ms. The
+  stabilization history covers 3 seconds so a 650 ms inference does not make
+  a stable object immediately ineligible or unable to collect four samples.
+  This slow-delivery case is simulated, not a measured phone performance claim.
+- Camera/source/aspect changes and explicit clearing still delete calibration.
+  The new recovery tests use synthetic boxes; they do not establish object
+  identity, depth accuracy, or safe navigation on a physical phone.

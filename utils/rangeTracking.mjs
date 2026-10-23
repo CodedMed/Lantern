@@ -27,6 +27,24 @@ const iou = (a, b) => {
     sb = shape(b);
   return intersection / (sa.w * sa.h + sb.w * sb.h - intersection || 1);
 };
+const TRACK_GRACE_MS = 800;
+// Keep eligibility within the UI's 1.4 s frame expiry, but don't make a 500–700
+// ms inference ineligible immediately on delivery. Calibration requires stillness.
+const REFERENCE_FRAME_AGE_MS = 1200;
+
+function compatibleView(box, reference) {
+  const current = shape(box);
+  const wr = reference.w / current.w,
+    hr = reference.h / current.h;
+  return (
+    fullBox(box) &&
+    Math.abs(Math.log(wr / hr)) <= 0.16 &&
+    Math.abs(current.x - reference.x) < 0.12 &&
+    Math.abs(current.y - reference.y) < 0.12 &&
+    Math.sqrt(wr * hr) >= 0.6 &&
+    Math.sqrt(wr * hr) <= 1.6
+  );
+}
 
 // A pinhole size-ratio estimator for ONE explicitly calibrated stationary object.
 // It is not learned monocular depth, identity recognition, or a collision sensor.
@@ -45,12 +63,25 @@ export class RangeTracker {
     this.reference = null;
     this.status = reason;
   }
+  // Keep the measured reference, but never retain a stale live meter reading.
+  park(reason = "Calibration saved. Confirm the same object to resume.") {
+    if (!this.reference) return;
+    this.reference.id = null;
+    this.reference.verifiedFrames = 0;
+    this.reference.recoveryConfirmed = false;
+    this.reference.estimates = [];
+    this.status = reason;
+  }
+  suspend(reason) {
+    this.tracks = [];
+    this.park(reason);
+  }
   update(items, timestamp, { width, height }) {
     const aspect = width / height;
     if (this.aspect && Math.abs(aspect / this.aspect - 1) > 0.03) this.reset();
     this.aspect = aspect;
     const available = this.tracks.filter(
-      (track) => timestamp - track.lastAt <= 650,
+      (track) => timestamp - track.lastAt <= TRACK_GRACE_MS,
     );
     const matched = new Set();
     const next = [];
@@ -85,7 +116,7 @@ export class RangeTracker {
         ...track.samples,
         { at: timestamp, w: current.w, h: current.h },
       ]
-        .filter((sample) => timestamp - sample.at <= 1800)
+        .filter((sample) => timestamp - sample.at <= 3000)
         .slice(-12);
       track = {
         ...track,
@@ -93,6 +124,7 @@ export class RangeTracker {
         samples,
         lastAt: timestamp,
         score: item.score,
+        visible: true,
       };
       next.push(track);
       let trend = "unknown";
@@ -107,13 +139,51 @@ export class RangeTracker {
       }
       return { ...item, trackId: track.id, trend, range: null };
     });
-    this.tracks = next; // Missing even one frame invalidates a meter reference.
-    if (this.reference && !next.some((track) => track.id === this.reference.id))
-      this.clearCalibration("Tracking lost. Recalibrate.");
+    // Brief detector flicker should not churn IDs. Missing tracks aren't rendered
+    // and cannot be calibrated; they only remain association candidates briefly.
+    this.tracks = [
+      ...next,
+      ...available
+        .filter((track) => !matched.has(track.id))
+        .map((track) => ({ ...track, visible: false })),
+    ];
     if (this.reference) {
+      if (this.reference.id === null) return output;
       const item = output.find(
         (candidate) => candidate.trackId === this.reference.id,
       );
+      if (!item) {
+        this.reference.verifiedFrames = 0;
+        this.reference.recoveryConfirmed = false;
+        this.reference.estimates = [];
+        if (timestamp - this.reference.lastVisibleAt > TRACK_GRACE_MS)
+          this.park(
+            "Calibration saved. Find the same object and confirm to resume.",
+          );
+        else this.status = "Calibration saved. Looking for the object…";
+        return output;
+      }
+      // A long gap also requires confirmation if the next processed frame is
+      // the returning object (there may have been no intervening empty frame).
+      if (timestamp - this.reference.lastVisibleAt > TRACK_GRACE_MS) {
+        this.park("Calibration saved. Confirm the same object to resume.");
+        return output;
+      }
+      this.reference.lastVisibleAt = timestamp;
+      if (
+        this.reference.verifiedFrames === 0 &&
+        !this.reference.recoveryConfirmed &&
+        output.some(
+          (candidate) =>
+            candidate.trackId !== item.trackId &&
+            candidate.class === item.class,
+        )
+      ) {
+        this.park(
+          "Calibration saved. Multiple similar objects; confirm the same one to resume.",
+        );
+        return output;
+      }
       if (
         output.some(
           (candidate) =>
@@ -122,35 +192,36 @@ export class RangeTracker {
             iou(candidate.bbox, item.bbox) > 0.05,
         )
       ) {
-        this.clearCalibration("Similar objects overlap. Recalibrate.");
+        this.park(
+          "Calibration saved. Similar objects overlap; confirm the same object when separated.",
+        );
         return output;
       }
       const current = shape(item.bbox),
         reference = this.reference;
       const wr = reference.w / current.w,
         hr = reference.h / current.h;
-      const stableAxes = Math.abs(Math.log(wr / hr)) <= 0.16;
-      const sameBearing =
-        Math.abs(current.x - reference.x) < 0.12 &&
-        Math.abs(current.y - reference.y) < 0.12;
-      const inRange = Math.sqrt(wr * hr) >= 0.6 && Math.sqrt(wr * hr) <= 1.6;
-      if (
-        !fullBox(item.bbox) ||
-        !stableAxes ||
-        !sameBearing ||
-        !inRange ||
-        item.score < 0.6
-      )
-        this.clearCalibration("View changed. Recalibrate.");
-      else {
+      if (!compatibleView(item.bbox, reference) || item.score < 0.6) {
+        reference.verifiedFrames = 0;
+        reference.recoveryConfirmed = false;
+        reference.estimates = [];
+        this.status =
+          "Calibration saved. Center the whole object at the original angle.";
+      } else {
+        reference.verifiedFrames++;
+        if (reference.verifiedFrames < 2) {
+          this.status = "Calibration saved. Checking the returning object…";
+          return output;
+        }
         const meters = reference.meters * Math.sqrt(wr * hr);
-        reference.estimates = [...reference.estimates, meters].slice(-3);
+        reference.estimates = [...reference.estimates, meters].slice(-5);
         const smoothed = median(reference.estimates);
         item.range = {
           meters: smoothed,
           label: `About ${Math.max(0.5, Math.round(smoothed * 2) / 2).toFixed(1)} m`,
           method: "calibrated-size-ratio",
         };
+        reference.recoveryConfirmed = false;
         this.status = "Rough estimate for the calibrated object only";
       }
     }
@@ -160,10 +231,11 @@ export class RangeTracker {
     const track = this.tracks.find((item) => item.id === id);
     if (
       !track ||
+      !track.visible ||
       !RIGID_CLASSES.has(track.class) ||
       track.score < 0.6 ||
       !fullBox(track.bbox) ||
-      now - track.lastAt > 450 ||
+      now - track.lastAt > REFERENCE_FRAME_AGE_MS ||
       track.samples.length < 4 ||
       now - track.firstAt < 600
     )
@@ -178,6 +250,7 @@ export class RangeTracker {
       this.tracks.some(
         (other) =>
           other.id !== id &&
+          other.visible &&
           other.class === track.class &&
           iou(other.bbox, track.bbox) > 0.05,
       )
@@ -186,8 +259,8 @@ export class RangeTracker {
     const widths = recent.map((s) => s.w),
       heights = recent.map((s) => s.h);
     return (
-      Math.max(...widths) / Math.min(...widths) < 1.12 &&
-      Math.max(...heights) / Math.min(...heights) < 1.12
+      Math.max(...widths) / Math.min(...widths) < 1.18 &&
+      Math.max(...heights) / Math.min(...heights) < 1.18
     );
   }
   calibrate(id, meters, now) {
@@ -201,13 +274,40 @@ export class RangeTracker {
     const recent = track.samples.slice(-4);
     this.reference = {
       id,
+      class: track.class,
       meters,
       w: median(recent.map((s) => s.w)),
       h: median(recent.map((s) => s.h)),
       x: shape(track.bbox).x,
       y: shape(track.bbox).y,
       estimates: [],
+      verifiedFrames: 2,
+      lastVisibleAt: now,
     };
     this.status = "Calibrated. Keep the same object and angle in view.";
+  }
+  canResume(id, now) {
+    const track = this.tracks.find((item) => item.id === id);
+    return Boolean(
+      this.reference &&
+      this.reference.id === null &&
+      track?.class === this.reference.class &&
+      this.canCalibrate(id, now) &&
+      compatibleView(track.bbox, this.reference),
+    );
+  }
+  // Confirmation reattaches the original size reference, NOT the old distance
+  // reading at the new position. It never learns an estimated distance as truth.
+  resume(id, now) {
+    if (!this.canResume(id, now))
+      throw new Error(
+        "Center the same stationary object at the original angle and hold still.",
+      );
+    this.reference.id = id;
+    this.reference.lastVisibleAt = now;
+    this.reference.verifiedFrames = 0;
+    this.reference.recoveryConfirmed = true;
+    this.reference.estimates = [];
+    this.status = "Checking the confirmed object…";
   }
 }

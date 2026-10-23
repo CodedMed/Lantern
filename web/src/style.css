@@ -307,6 +307,31 @@ header {
 .large-text .range-status {
   font-size: 14px;
 }
+.range-recovery,
+.saved-reference {
+  border: 1px solid #ddd;
+  padding: 12px;
+  margin: 8px 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.range-recovery p,
+.saved-reference p {
+  margin: 0 0 8px;
+}
+.saved-reference h3 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+.range-recovery button {
+  min-height: 44px;
+  padding: 8px 12px;
+  background: #111;
+  color: #fff;
+  border: 1px solid #111;
+  border-radius: 3px;
+  font: inherit;
+}
 .cue {
   min-height: 72px;
 }
