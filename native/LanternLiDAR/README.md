@@ -39,12 +39,21 @@ filtering automatically but is never required to obtain a proximity reading.
 | Very close sampled surface anywhere in the three bands | STOP / “Surface very close.” |
 | Side surface is close but the forward band is farther | CLOSE ON LEFT/RIGHT / “Keep clear.” |
 | Neither side is reliably measured around a close obstacle | STOP / “Obstacle ahead.” |
+| Close surfaces measured in all three bands | STOP · VIEW BLOCKED / “Close surfaces left, ahead and right.” |
 | Fresh depth is insufficient or the phone is pointed away | DEPTH UNCERTAIN / pause, or POINT CAMERA FORWARD |
 
 The arrow compares **visible surfaces**, not a certified route. A turn means
 stop and reorient **in place**, then check again before a step. Body orientation
 is not independently measured; the phone must remain aligned with the body.
 There is no instruction to sidestep or back into unseen space.
+
+Pointing directly at a wall around 1.1 m away can correctly measure close
+surfaces in all three bands. **VIEW BLOCKED** distinguishes this from missing
+depth or a loading/scan step. It does not identify the material as a wall or
+claim the entire room is blocked. A turn target is highlighted only after a
+farther side meets the existing confidence, coverage and stability checks.
+Changes in the current view update advice automatically; there is no manual
+scan sequence or assumption about space outside the camera view.
 
 Prototype fixed thresholds: 2.3 m early warning (exit at 2.6 m), 1.4 m avoidance
 hint, 0.65 m close-surface STOP. These are **unvalidated engineering heuristics**,

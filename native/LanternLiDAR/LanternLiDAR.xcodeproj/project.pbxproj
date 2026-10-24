@@ -4,6 +4,8 @@
     classes = {};
     objectVersion = 56;
     objects = {
+        300000000000000000000001 = {isa = PBXBuildFile; fileRef = 300000000000000000000002; };
+        300000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
         100000000000000000000008 = {isa = PBXBuildFile; fileRef = 100000000000000000000006; };
         100000000000000000000009 = {isa = PBXBuildFile; fileRef = 100000000000000000000007; };
         100000000000000000000016 = {isa = PBXBuildFile; productRef = 100000000000000000000015; };
@@ -15,11 +17,11 @@
         100000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LidarController.swift; sourceTree = "<group>"; };
         100000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LanternLiDAR.app; sourceTree = BUILT_PRODUCTS_DIR; };
         100000000000000000000002 = {isa = PBXGroup; children = (100000000000000000000003, 200000000000000000000002, 100000000000000000000004); sourceTree = "<group>"; };
-        100000000000000000000003 = {isa = PBXGroup; children = (100000000000000000000006, 100000000000000000000007); path = App; sourceTree = "<group>"; };
+        100000000000000000000003 = {isa = PBXGroup; children = (300000000000000000000002, 100000000000000000000006, 100000000000000000000007); path = App; sourceTree = "<group>"; };
         100000000000000000000004 = {isa = PBXGroup; children = (100000000000000000000005, 200000000000000000000004); name = Products; sourceTree = "<group>"; };
         10000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000008, 100000000000000000000009); runOnlyForDeploymentPostprocessing = 0; };
         10000000000000000000000B = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000016); runOnlyForDeploymentPostprocessing = 0; };
-        10000000000000000000000C = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        10000000000000000000000C = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (300000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
         200000000000000000000005 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (200000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
         200000000000000000000006 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (200000000000000000000003); runOnlyForDeploymentPostprocessing = 0; };
         200000000000000000000007 = {isa = PBXNativeTarget;
@@ -54,6 +56,8 @@
         100000000000000000000012 = {
             isa = XCBuildConfiguration;
             buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                INFOPLIST_KEY_CFBundleDisplayName = Lantern;
                 CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = "";
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_KEY_NSCameraUsageDescription = "Lantern uses the rear camera and LiDAR to estimate nearby surface distances on this device. No images or depth are uploaded.";
@@ -71,6 +75,8 @@
         100000000000000000000013 = {
             isa = XCBuildConfiguration;
             buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                INFOPLIST_KEY_CFBundleDisplayName = Lantern;
                 CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = "";
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_KEY_NSCameraUsageDescription = "Lantern uses the rear camera and LiDAR to estimate nearby surface distances on this device. No images or depth are uploaded.";

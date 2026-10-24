@@ -102,6 +102,48 @@ final class LiveProximityTests: XCTestCase {
         var guide = LiveProximityGuide()
         XCTAssertEqual(settle(&guide, scene(1.2, 1.5, 1.5)), .stop(.obstacle))
     }
+    func testReportedWallExplainsMeasuredBlockedViewImmediately() {
+        var left = cells(1.2)
+        left[55] = DepthCell(meters: 1.1, confidence: 2)
+        let input: [Sector: LiveRegion] = [.left: LiveRegion(cells: left), .ahead: region(1.1), .right: region(1.1)]
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1, now: 1), .stop(.blockedView))
+        XCTAssertTrue(LiveAction.stop(.blockedView).detail.contains("not a loading"))
+        XCTAssertEqual(input[.left]?.reading.coverage, 1)
+        XCTAssertEqual(input[.left]?.reading.meters, 1.2)
+        XCTAssertEqual(input[.left]?.nearestHit, 1.1)
+    }
+    func testUnknownOrSparseSidesCannotBeCalledMeasuredBlockedView() {
+        var sparse = cells(1.1)
+        for i in 0..<90 { sparse[i] = .unknown }
+        for side in [region(nil), LiveRegion(cells: sparse)] {
+            var guide = LiveProximityGuide()
+            XCTAssertEqual(settle(&guide, [.ahead: region(1.1), .left: region(1.1), .right: side]), .stop(.obstacle))
+        }
+    }
+    func testBlockedViewAutomaticallyRecoversToMeasuredSideHint() {
+        for side in [Sector.left, .right] {
+            var guide = LiveProximityGuide()
+            XCTAssertEqual(settle(&guide, scene(1.1,1.1,1.1)), .stop(.blockedView))
+            var input = scene(1.1,1.1,1.1)
+            input[side] = region(3)
+            XCTAssertEqual(settle(&guide, input, start: 1.6), .turn(side))
+        }
+    }
+    func testBlockedViewRevokesOldTurnWithoutSpeechBacklog() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.1,3,1.1)), .turn(.left))
+        let stopped = guide.update(scene(1.1,1.1,1.1), pose: pose, capturedAt: 1.6, now: 1.6)
+        XCTAssertEqual(stopped, .stop(.blockedView))
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 1, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(stopped.cue(), now: 1.01, speaking: true))
+        XCTAssertFalse(policy.shouldSpeak(stopped.cue(), now: 1.02, speaking: true))
+    }
+    func testFartherAllBandWallStillWarnsRatherThanStoppingOrTurning() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(2.2,2.2,2.2), pose: pose, capturedAt: 1, now: 1), .caution)
+    }
     func testLowConfidenceCannotProduceSideHint() {
         for quality: UInt8 in [0, 1, 255] {
             var guide = LiveProximityGuide()
@@ -252,7 +294,7 @@ final class LiveProximityTests: XCTestCase {
     }
     func testNoRuntimeSpeechAsksForFloorOrDirectionalScan() {
         let actions: [LiveAction] = [.starting,.ahead,.caution,.sideClose(.left),.turn(.left),.turn(.right),
-            .stop(.close),.stop(.obstacle),.stop(.uncertain),.stop(.rechecking),.stop(.camera)]
+            .stop(.close),.stop(.obstacle),.stop(.blockedView),.stop(.uncertain),.stop(.rechecking),.stop(.camera)]
         for action in actions {
             let speech = action.cue().speech.lowercased()
             XCTAssertFalse(speech.contains("scan"))

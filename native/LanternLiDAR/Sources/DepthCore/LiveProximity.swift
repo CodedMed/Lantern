@@ -56,7 +56,7 @@ public struct LiveRegion: Sendable {
     }
 }
 
-public enum LiveStop: String, Equatable, Sendable { case close, obstacle, uncertain, rechecking, camera }
+public enum LiveStop: String, Equatable, Sendable { case close, obstacle, blockedView, uncertain, rechecking, camera }
 public enum LiveAction: Equatable, Sendable {
     case starting, ahead, caution, sideClose(Sector), turn(Sector), stop(LiveStop)
     public var title: String {
@@ -68,6 +68,7 @@ public enum LiveAction: Equatable, Sendable {
         case .turn(.left): return "STOP · TURN LEFT"
         case .turn(.right): return "STOP · TURN RIGHT"
         case .turn(.ahead), .stop(.close), .stop(.obstacle): return "STOP"
+        case .stop(.blockedView): return "STOP · VIEW BLOCKED"
         case .stop(.uncertain): return "DEPTH UNCERTAIN"
         case .stop(.rechecking): return "RECHECKING HEADING"
         case .stop(.camera): return "POINT CAMERA FORWARD"
@@ -82,6 +83,7 @@ public enum LiveAction: Equatable, Sendable {
         case let .turn(side): return "More measured space is visible to the \(side.rawValue). Stop, turn in place with the phone aligned to your body, then recheck before a step. The arrow does not verify footing or full body clearance."
         case .stop(.close): return "A surface is very close in the sensing band. Stop; no turn instruction overrides this warning."
         case .stop(.obstacle): return "A close surface is ahead. No reliable side alternative is ready. Stay stopped; the app will update automatically when the view changes."
+        case .stop(.blockedView): return "Close surfaces are measured in all three bands: left, ahead and right. No measured side meets the turn criteria. This is a blocked view, not a loading or scanning step. Stay stopped; advice updates automatically as the view changes."
         case .stop(.uncertain): return "Fresh forward depth is insufficient. Pause. Unmeasured space is not being labeled clear."
         case .stop(.rechecking): return "The heading or proposed side changed. The old turn is cancelled while fresh measurements are checked."
         case .stop(.camera): return "Hold the phone upright and point it along your body’s forward direction. The camera cannot see through the back or sides of the phone."
@@ -104,6 +106,7 @@ public enum LiveAction: Equatable, Sendable {
             switch reason {
             case .close: speech = "Stop. Surface very close."
             case .obstacle: speech = "Stop. Obstacle ahead."
+            case .blockedView: speech = "Stop. Close surfaces left, ahead and right."
             case .uncertain: speech = "Depth uncertain. Pause."
             case .rechecking: speech = "Pause. Rechecking the heading."
             case .camera: speech = "Pause. Point the camera forward."
@@ -179,7 +182,17 @@ public struct LiveProximityGuide {
             return emit(warning ? .caution : .ahead)
         }
         let alternatives = [Sector.left, .right].filter { regions[$0]?.supportsAlternative(to: distance) == true }
-        guard !alternatives.isEmpty else { clearTurn(); return emit(.stop(.obstacle)) }
+        guard !alternatives.isEmpty else {
+            clearTurn()
+            // Explain a genuinely measured near view differently from missing
+            // side data. Do not infer a wall's identity or a route outside view.
+            let allNear = Sector.allCases.allSatisfy { sector in
+                guard let region = regions[sector], region.supportsAhead,
+                      let patch = region.reading.meters else { return false }
+                return patch <= Self.turnDistance
+            }
+            return emit(.stop(allNear ? .blockedView : .obstacle))
+        }
         let best = alternatives.max { (regions[$0]?.nearestHit ?? 0) < (regions[$1]?.nearestHit ?? 0) }!
         let target: Sector
         if let selected, alternatives.contains(selected),

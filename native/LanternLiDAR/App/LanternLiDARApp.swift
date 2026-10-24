@@ -55,6 +55,7 @@ private struct LidarScreen: View {
                         Text("A farther surface gives a distance warning. At a closer surface the app can suggest a stop-and-turn toward a better-measured side. It checks new depth continuously; there is no scan checklist.")
                         Text("A turn means stop and reorient in place, then recheck. It is not permission to step. The phone must face along your body; body heading is not measured independently.")
                         Text("Missing or uncertain depth never becomes an open route. If neither side is reliably measured, STOP is the correct output.")
+                        Text("VIEW BLOCKED means close surfaces were measured in all three bands. For example, pointing directly at a wall about 1.1 m away should stop, not invent a left/right exit. The app cannot see around the wall or outside its camera view.")
                         Text("The prototype settings are 2.3 m for early warning, 1.4 m for avoidance, and 0.65 m for a close-surface STOP. They are unvalidated fixed heuristics, not safe stopping distances or settings adapted to your speed.")
                     }.font(.caption).padding(.top, 8)
                 }
@@ -140,9 +141,11 @@ private struct LidarScreen: View {
                     Text(sector.rawValue.capitalized).font(.caption)
                     Text(distanceLabel(sector))
                         .font(.headline).minimumScaleFactor(0.7)
-                    Text("Closest sample").font(.caption2).foregroundStyle(.secondary)
+                    Text(sideStatus(sector)).font(.caption2)
                 }.frame(maxWidth: .infinity, alignment: .top).padding(10).frame(maxHeight: .infinity, alignment: .top)
-                    .overlay(Rectangle().stroke(.gray.opacity(0.3), lineWidth: 1))
+                    .background(isTurnTarget(sector) ? Color.black : Color.white)
+                    .foregroundStyle(isTurnTarget(sector) ? Color.white : Color.black)
+                    .overlay(Rectangle().stroke(isTurnTarget(sector) ? .black : .gray.opacity(0.3), lineWidth: 1))
                     .accessibilityElement(children: .combine).accessibilityIdentifier("distance-\(sector.rawValue)")
             }
         }.fixedSize(horizontal: false, vertical: true)
@@ -151,6 +154,16 @@ private struct LidarScreen: View {
         guard sensor.running else { return "—" }
         guard let meters = sensor.regions[sector]?.nearestHit else { return "Unknown" }
         return String(format: "~%.1f m", meters)
+    }
+    private func isTurnTarget(_ sector: Sector) -> Bool {
+        if case .turn(let target) = sensor.liveAction { return target == sector }
+        return false
+    }
+    private func sideStatus(_ sector: Sector) -> String {
+        guard sensor.running, let region = sensor.regions[sector], let distance = region.nearestHit else { return "Not measured" }
+        if isTurnTarget(sector) { return "Turn and recheck" }
+        guard region.supportsAhead else { return "Partial reading" }
+        return distance <= LiveProximityGuide.turnDistance ? "Close surface" : "Closest sample"
     }
 }
 
