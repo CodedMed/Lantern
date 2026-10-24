@@ -18,7 +18,7 @@ private struct LidarScreen: View {
                     Spacer()
                     Text("LiDAR prototype").font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Aim forward. Live alerts compare visible surfaces—not verified walking routes.")
+                Text("Face the phone forward. Follow one direction at a time as obstacles get closer.")
                     .font(.subheadline)
                 if sensor.running { liveCard }
                 controls
@@ -45,18 +45,18 @@ private struct LidarScreen: View {
                             Text("Voice speed")
                         } minimumValueLabel: { Text("Slower").font(.caption) } maximumValueLabel: { Text("Faster").font(.caption) }
                             .tint(.black)
-                        Text("Normal sentences finish. A new STOP cancels an obsolete turn. Repeat does not restart a sentence. VoiceOver voice and speed settings take precedence.")
+                        Text("Directions are short. A new turn can interrupt general commentary; STOP or a changed path cancels an old turn. Repeat does not restart a sentence. VoiceOver voice and speed settings take precedence.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(.top, 8)
                 }
                 DisclosureGroup("What these alerts mean") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("The app measures three gravity-level bands: left, ahead and right. Floor classification can improve filtering automatically but is never a setup requirement.")
-                        Text("A farther surface gives a distance warning. At a closer surface the app can suggest a stop-and-turn toward a better-measured side. It checks new depth continuously; there is no scan checklist.")
-                        Text("A turn means stop and reorient in place, then recheck. It is not permission to step. The phone must face along your body; body heading is not measured independently.")
+                        Text("An obstacle ahead gives a slow-down warning. As it gets close, TURN LEFT or TURN RIGHT points toward a side with more measured room. The choice stays the same while that side remains supported by fresh depth.")
+                        Text("Turn slowly with the phone facing along your body. The app follows the new view and updates as the obstacle leaves the way ahead. The phone only measures visible surfaces; a turn does not establish footing or full body clearance.")
                         Text("Missing or uncertain depth never becomes an open route. If neither side is reliably measured, STOP is the correct output.")
-                        Text("VIEW BLOCKED means close surfaces were measured in all three bands. For example, pointing directly at a wall about 1.1 m away should stop, not invent a left/right exit. The app cannot see around the wall or outside its camera view.")
-                        Text("The prototype settings are 2.3 m for early warning, 1.4 m for avoidance, and 0.65 m for a close-surface STOP. They are unvalidated fixed heuristics, not safe stopping distances or settings adapted to your speed.")
+                        Text("STOP can mean close surfaces in all three bands, insufficient depth, or an immediate close obstacle. The explanation below it gives the reason. A wall filling the view provides no measured side opening.")
+                        Text("The prototype begins avoidance at 1.6 m and releases it at 2.0 m, so small distance changes do not keep switching the answer. A 0.65 m close hit immediately triggers STOP. These fixed thresholds have not been validated as safe stopping distances.")
                     }.font(.caption).padding(.top, 8)
                 }
                 Text("Not validated for independent navigation. Low obstacles, overhead hazards, steps, drop-offs and glass can be missed. The arrow does not verify footing or full body clearance. Test with a sighted helper and keep using established mobility aids. Never use for road crossing.")
@@ -89,6 +89,7 @@ private struct LidarScreen: View {
                     ForEach(Sector.allCases, id: \.self) { sector in
                         if let region = sensor.regions[sector] {
                             Text("\(sector.rawValue.capitalized): \(region.reading.label); \(Int((region.reading.coverage * 100).rounded()))% high-confidence coverage.")
+                            Text("\(Int((region.nonFloorCoverage * 100).rounded()))% non-floor coverage for direction checks.")
                             if let nearest = region.nearestHit {
                                 Text(String(format: "Closest individual sample: %.1f m", nearest))
                             }
@@ -161,7 +162,7 @@ private struct LidarScreen: View {
     }
     private func sideStatus(_ sector: Sector) -> String {
         guard sensor.running, let region = sensor.regions[sector], let distance = region.nearestHit else { return "Not measured" }
-        if isTurnTarget(sector) { return "Turn and recheck" }
+        if isTurnTarget(sector) { return "Turn this way" }
         guard region.supportsAhead else { return "Partial reading" }
         return distance <= LiveProximityGuide.turnDistance ? "Close surface" : "Closest sample"
     }

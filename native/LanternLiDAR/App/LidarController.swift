@@ -179,8 +179,8 @@ final class LidarController: NSObject, ObservableObject, ARSessionDelegate, AVSp
         guard voiceEnabled, running else { return }
         let now = CACurrentMediaTime()
         guard speechPolicy.shouldSpeak(cue, now: now, speaking: activeUtterance != nil || speech.isSpeaking, manual: manual) else { return }
-        // The policy permits this only for a higher-priority STOP/close-ahead cue.
-        // Normal changes and Repeat wait instead of cutting off a sentence.
+        // Confirmed turns can supersede routine commentary; new forward advice
+        // or STOP cancels an obsolete turn. Repeat and distance jitter wait.
         if activeUtterance != nil || speech.isSpeaking { stopSpeech() }
         let utterance = AVSpeechUtterance(string: cue.speech)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")

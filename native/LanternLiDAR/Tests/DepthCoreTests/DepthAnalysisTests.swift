@@ -77,9 +77,9 @@ final class LiveProximityTests: XCTestCase {
     func testTurnRequiresDistinctFramesAndBriefStableSide() {
         var guide = LiveProximityGuide()
         let input = scene(1.2, 3, nil)
-        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1, now: 1), .stop(.obstacle))
-        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.1, now: 1.1), .stop(.obstacle))
-        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.2, now: 1.2), .stop(.obstacle))
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1, now: 1), .caution)
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.1, now: 1.1), .caution)
+        XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.2, now: 1.2), .caution)
         XCTAssertEqual(guide.update(input, pose: pose, capturedAt: 1.3, now: 1.3), .turn(.left))
     }
     func testLostAlternativeRevokesTurnInTheSameFrame() {
@@ -100,7 +100,7 @@ final class LiveProximityTests: XCTestCase {
     }
     func testBlockedSidesDoNotInventAnEscapeRoute() {
         var guide = LiveProximityGuide()
-        XCTAssertEqual(settle(&guide, scene(1.2, 1.5, 1.5)), .stop(.obstacle))
+        XCTAssertEqual(settle(&guide, scene(1.2, 1.5, 1.5)), .stop(.blockedView))
     }
     func testReportedWallExplainsMeasuredBlockedViewImmediately() {
         var left = cells(1.2)
@@ -192,26 +192,28 @@ final class LiveProximityTests: XCTestCase {
     func testLongGapRequiresNewTurnStabilization() {
         var guide = LiveProximityGuide()
         _ = settle(&guide, scene(1.2, 3, nil))
-        XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: pose, capturedAt: 3, now: 3), .stop(.obstacle))
+        XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: pose, capturedAt: 3, now: 3), .caution)
     }
-    func testTurningBodyWithdrawsOldDirection() {
+    func testAbruptCameraRotationWithdrawsDirection() {
         var guide = LiveProximityGuide()
         _ = settle(&guide, scene(1.2, 3, nil))
-        let angle = 15.0 * .pi / 180
+        let angle = 30.0 * .pi / 180
         let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle),0,-cos(angle)), up: SIMD3(0,1,0))!
         XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: rotated, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
     }
-    func testNoDirectionSurvivesGradualCumulativeTurn() {
+    func testNormalTurnKeepsDirectionOnlyWhileNewViewSupportsIt() {
         var guide = LiveProximityGuide()
         _ = settle(&guide, scene(1.2,3,nil))
-        var rechecked = false
-        for i in 1...6 {
+        for i in 1...15 {
             let angle = Double(i * 2) * .pi / 180
             let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(angle),0,-cos(angle)), up: SIMD3(0,1,0))!
             let stamp = 1.5 + Double(i) * 0.1
-            if guide.update(scene(1.2,3,nil), pose: rotated, capturedAt: stamp, now: stamp) == .stop(.rechecking) { rechecked = true }
+            XCTAssertEqual(guide.update(scene(1.2,3,nil), pose: rotated, capturedAt: stamp, now: stamp), .turn(.left))
         }
-        XCTAssertTrue(rechecked)
+        let rotated = InspectionPose(position: .zero, forward: SIMD3(-sin(.pi/6),0,-cos(.pi/6)), up: SIMD3(0,1,0))!
+        // A new near object on the selected side still cancels it immediately,
+        // even though the user was turning in the instructed direction.
+        XCTAssertEqual(guide.update(scene(1.2,1.1,nil), pose: rotated, capturedAt: 3.1, now: 3.1), .stop(.obstacle))
     }
     func testForwardDepthRecoveryDoesNotRequireStoppingPhoneMotion() {
         var guide = LiveProximityGuide()
@@ -232,7 +234,7 @@ final class LiveProximityTests: XCTestCase {
     func testClearedFrontRevokesOldTurnBeforeForwardAdvice() {
         var guide = LiveProximityGuide()
         _ = settle(&guide, scene(1.2,3,nil))
-        XCTAssertEqual(guide.update(scene(3), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
+        XCTAssertEqual(guide.update(scene(3), pose: pose, capturedAt: 1.6, now: 1.6), .ahead)
         XCTAssertEqual(guide.update(scene(3), pose: pose, capturedAt: 1.7, now: 1.7), .ahead)
     }
     func testTiltOrMissingPoseDoesNotProduceTurn() {
@@ -289,8 +291,145 @@ final class LiveProximityTests: XCTestCase {
         XCTAssertTrue(policy.shouldSpeak(LiveAction.caution.cue(meters: 2.2), now: 1, speaking: false))
         XCTAssertFalse(policy.shouldSpeak(LiveAction.caution.cue(meters: 1.8), now: 1.1, speaking: true))
         policy.didFinish(at: 3)
-        XCTAssertFalse(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.4, speaking: false))
-        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.9, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.4, speaking: false))
+        XCTAssertFalse(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.9, speaking: true))
+    }
+    func testApproachPreparesTurnBeforeNearThreshold() {
+        var guide = LiveProximityGuide()
+        for i in 0..<5 {
+            let time = 1 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(2.1,3.2,1.8), pose: pose, capturedAt: time, now: time), .caution)
+        }
+        XCTAssertEqual(guide.update(scene(1.5,3.2,1.8), pose: pose, capturedAt: 1.5, now: 1.5), .turn(.left))
+    }
+    func testNoisyFrontThresholdDoesNotEraseChosenSide() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.3,3,2.3)), .turn(.left))
+        for i in 0..<120 {
+            let distances = [1.38,1.42,1.58,1.62,1.79,1.51]
+            let time = 1.6 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(distances[i % distances.count],3,2.3), pose: pose, capturedAt: time, now: time), .turn(.left))
+        }
+    }
+    func testEvenMuchFartherOtherSideDoesNotReverseValidChosenSide() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2,3,2.2)), .turn(.left))
+        for i in 0..<60 {
+            let time = 1.6 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(1.2,2.5,i % 2 == 0 ? 3.5 : 4), pose: pose, capturedAt: time, now: time), .turn(.left))
+        }
+    }
+    func testConfirmedSideToleratesCoverageNoiseButNewSideStillNeedsStrongEvidence() {
+        var grid = cells(3)
+        for row in 0..<12 { for col in 0..<10 where (row + col) % 3 == 0 { grid[row * 10 + col] = .unknown } }
+        let partial = LiveRegion(cells: grid)
+        XCTAssertTrue(partial.sustainsAlternative(to: 1.2))
+        XCTAssertFalse(partial.supportsAlternative(to: 1.2))
+        let input: [Sector: LiveRegion] = [.ahead: region(1.2),.left: partial,.right: region(1.5)]
+        var existing = LiveProximityGuide()
+        XCTAssertEqual(settle(&existing, scene(1.2,3,1.5)), .turn(.left))
+        XCTAssertEqual(existing.update(input, pose: pose, capturedAt: 1.6, now: 1.6), .turn(.left))
+        var fresh = LiveProximityGuide()
+        XCTAssertEqual(settle(&fresh, input), .stop(.obstacle))
+        grid[55] = DepthCell(meters: 1.7, confidence: 2)
+        XCTAssertFalse(LiveRegion(cells: grid).sustainsAlternative(to: 1.2))
+        XCTAssertEqual(existing.update([.ahead: region(1.2),.left: LiveRegion(cells: grid)], pose: pose, capturedAt: 1.7, now: 1.7), .stop(.obstacle))
+    }
+    func testRetainingSideStillRequiresEveryHeightAndLateralBand() {
+        var heightMissing = cells(3), columnMissing = cells(3)
+        for i in 0..<40 { heightMissing[i] = .unknown }
+        for row in 0..<12 { columnMissing[row * 10] = .unknown }
+        for missing in [heightMissing,columnMissing] {
+            var guide = LiveProximityGuide()
+            _ = settle(&guide, scene(1.2,3,nil))
+            XCTAssertFalse(LiveRegion(cells: missing).sustainsAlternative(to: 1.2))
+            XCTAssertEqual(guide.update([.ahead: region(1.2),.left: LiveRegion(cells: missing)], pose: pose, capturedAt: 1.6, now: 1.6), .stop(.obstacle))
+        }
+    }
+    func testClassifiedFloorDoesNotInflateDirectionCoverage() {
+        var grid = cells(3)
+        for row in 0..<12 { for col in 0..<10 where (row + col) % 3 == 0 {
+            grid[row * 10 + col] = DepthCell(meters: 3, confidence: 2, isKnownFloor: true)
+        } }
+        let mixed = LiveRegion(cells: grid)
+        XCTAssertEqual(mixed.reading.coverage, 1)
+        XCTAssertEqual(mixed.nonFloorCoverage, 2.0 / 3, accuracy: 0.00001)
+        XCTAssertFalse(mixed.supportsAlternative(to: 1.2))
+        XCTAssertTrue(mixed.sustainsAlternative(to: 1.2))
+    }
+    func testAvoidanceExitDoesNotReenterOnSmallForwardFluctuations() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2,3,2.3))
+        XCTAssertEqual(guide.update(scene(2.1,3,2.3), pose: pose, capturedAt: 1.6, now: 1.6), .caution)
+        for i in 0..<30 {
+            let time = 1.7 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(i % 2 == 0 ? 1.8 : 2.1,3,2.3), pose: pose, capturedAt: time, now: time), .caution)
+        }
+    }
+    func testEmergencyBoundaryNoiseCannotRepeatedlyReleaseStop() {
+        var guide = LiveProximityGuide()
+        _ = settle(&guide, scene(1.2,3,nil))
+        for (i,distance) in [0.64,0.66,0.63,0.72,0.82].enumerated() {
+            let time = 1.6 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(distance,3,nil), pose: pose, capturedAt: time, now: time), .stop(.close))
+        }
+    }
+    func testSideWarningStaysOnOneSideThroughSmallDistanceChanges() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(3,0.95,1), pose: pose, capturedAt: 1, now: 1), .sideClose(.left))
+        XCTAssertEqual(guide.update(scene(3,1.12,0.9), pose: pose, capturedAt: 1.1, now: 1.1), .sideClose(.left))
+        XCTAssertEqual(guide.update(scene(3,1.4,0.9), pose: pose, capturedAt: 1.2, now: 1.2), .sideClose(.right))
+    }
+    func testSideWarningStillPrioritizesMateriallyCloserNewHazard() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(guide.update(scene(3,0.95,1), pose: pose, capturedAt: 1, now: 1), .sideClose(.left))
+        XCTAssertEqual(guide.update(scene(3,1.12,0.7), pose: pose, capturedAt: 1.1, now: 1.1), .sideClose(.right))
+    }
+    func testConfirmedTurnImmediatelySupersedesRoutineSpeechAndDoesNotRestart() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.caution.cue(), now: 1, speaking: false))
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.right).cue(), now: 1.1, speaking: true))
+        for i in 0..<20 {
+            XCTAssertFalse(policy.shouldSpeak(LiveAction.turn(.right).cue(), now: 1.2 + Double(i) * 0.1, speaking: true))
+        }
+        XCTAssertEqual(LiveAction.turn(.left).cue().speech, "Turn left.")
+        XCTAssertEqual(LiveAction.turn(.right).cue().speech, "Turn right.")
+    }
+    func testNewForwardAdviceCancelsAnObsoleteSpokenTurn() {
+        for action in [LiveAction.ahead,.caution,.sideClose(.left)] {
+            var policy = DepthSpeechPolicy()
+            XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.right).cue(), now: 1, speaking: false))
+            XCTAssertTrue(policy.shouldSpeak(action.cue(), now: 1.1, speaking: true))
+            XCTAssertFalse(policy.shouldSpeak(action.cue(), now: 1.2, speaking: true))
+        }
+    }
+    func testManualButtonsDoNotInterruptTurnOrStop() {
+        for action in [LiveAction.turn(.left),.stop(.close)] {
+            var policy = DepthSpeechPolicy()
+            XCTAssertTrue(policy.shouldSpeak(action.cue(), now: 1, speaking: false))
+            XCTAssertFalse(policy.shouldSpeak(action.cue(), now: 1.1, speaking: true, manual: true))
+            XCTAssertFalse(policy.shouldSpeak(LiveProximityGuide.distanceReadout(scene()), now: 1.2, speaking: true, manual: true))
+        }
+    }
+    func testUnchangedDirectionLetsRequestedDistancesFinish() {
+        var policy = DepthSpeechPolicy()
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 1, speaking: false))
+        policy.didFinish(at: 2)
+        XCTAssertTrue(policy.shouldSpeak(LiveProximityGuide.distanceReadout(scene()), now: 3, speaking: false, manual: true))
+        for i in 0..<30 {
+            XCTAssertFalse(policy.shouldSpeak(LiveAction.turn(.left).cue(), now: 3.1 + Double(i) * 0.1, speaking: true))
+        }
+        XCTAssertTrue(policy.shouldSpeak(LiveAction.stop(.close).cue(), now: 6.1, speaking: true))
+    }
+    func testRecoveredPreferredSideReconfirmsWithoutBriefOppositeTurn() {
+        var guide = LiveProximityGuide()
+        XCTAssertEqual(settle(&guide, scene(1.2,3,2.5)), .turn(.left))
+        XCTAssertEqual(guide.update(scene(1.2,nil,2.5), pose: pose, capturedAt: 1.6, now: 1.6), .stop(.rechecking))
+        for i in 0..<3 {
+            let time = 1.7 + Double(i) * 0.1
+            XCTAssertEqual(guide.update(scene(1.2,3,2.5), pose: pose, capturedAt: time, now: time), .caution)
+        }
+        XCTAssertEqual(guide.update(scene(1.2,3,2.5), pose: pose, capturedAt: 2, now: 2), .turn(.left))
     }
     func testNoRuntimeSpeechAsksForFloorOrDirectionalScan() {
         let actions: [LiveAction] = [.starting,.ahead,.caution,.sideClose(.left),.turn(.left),.turn(.right),

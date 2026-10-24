@@ -158,13 +158,11 @@ public struct DepthCue: Equatable, Sendable {
     public let speech: String
     public let key: String
     public let urgent: Bool
-    // Only a new live STOP revokes an obsolete instruction immediately.
-    // Ordinary live hints finish sentences; legacy pause cues remain compatible.
+    // Confirmed turns supersede routine commentary. STOP outranks every turn.
+    // Stable semantic keys prevent decimal fluctuations from restarting speech.
     public var speechPriority: Int {
         if key.hasPrefix("live:stop-") { return 3 }
-        // Live turn hints finish the current sentence. Only a STOP revokes an
-        // obsolete action immediately; a turn is not a new emergency escalation.
-        if key.hasPrefix("live:turn-") { return 1 }
+        if key.hasPrefix("live:turn-") { return 2 }
         return key.hasPrefix("pause:") ? 2 : urgent ? 1 : 0
     }
     // These keys are emitted only after the sensor-independent guide has already
@@ -179,6 +177,8 @@ public struct DepthCue: Equatable, Sendable {
 /// callers keep offering the latest cue; normal changes wait for speech to finish.
 public struct DepthSpeechPolicy {
     private var lastKey: String?
+    private var lastAutomaticKey: String?
+    private var activeManual = false
     private var lastTime = -Double.infinity
     private var lastPriority = -1
     private var lastCloseWarningAt = -Double.infinity
@@ -188,7 +188,7 @@ public struct DepthSpeechPolicy {
     private var lastObserved = -Double.infinity
     public init() {}
     public mutating func didFinish(at now: Double) {
-        if now.isFinite, now >= lastTime { finishedAt = now }
+        if now.isFinite, now >= lastTime { finishedAt = now; activeManual = false }
     }
     public mutating func shouldSpeak(_ cue: DepthCue, now: Double, speaking: Bool, manual: Bool = false) -> Bool {
         guard now.isFinite, now >= lastObserved, now >= lastTime, now >= finishedAt else { return false }
@@ -197,23 +197,33 @@ public struct DepthSpeechPolicy {
             candidateSince = now
         }
         lastObserved = now
-        let escalates = cue.speechPriority >= 2 && cue.speechPriority > lastPriority
+        // An unchanged turn must not cut off a user-requested Distances readout
+        // simply because that readout has a lower speech priority.
+        let unchangedDuringManual = activeManual && cue.key == lastAutomaticKey
+        let escalates = !unchangedDuringManual && cue.speechPriority >= 2 && cue.speechPriority > lastPriority
         let revokesMovement = cue.speechPriority == 3 && lastPriority < 3
+        let beginsTurn = cue.key.hasPrefix("live:turn-") && lastPriority < 2
+        // Completing a turn must cancel an obsolete spoken turn just as losing
+        // its supporting depth does. Only the guide's current forward/side
+        // advice can take this path; arbitrary/manual readouts cannot.
+        let endsTurn = lastKey?.hasPrefix("live:turn-") == true
+            && (cue.key == "live:ahead" || cue.key == "live:caution" || cue.key.hasPrefix("live:side-"))
+        let immediate = escalates || endsTurn
         if speaking {
-            // Repeat, low confidence, distance fluctuations and side switches
-            // must not restart the sentence. One genuine escalation may.
-            guard !manual, escalates,
-                  revokesMovement || (now - lastTime >= 1 && now - lastCloseWarningAt >= 6) else { return false }
+            guard !manual, immediate,
+                  revokesMovement || beginsTurn || endsTurn || (now - lastTime >= 1 && now - lastCloseWarningAt >= 6) else { return false }
         }
         if !manual {
             let elapsed = now - lastTime
-            let settle = cue.hasStabilizedDirection ? 0 : cue.key.hasPrefix("unknown") ? 0.8 : escalates ? 0 : 0.45
+            let settle = cue.hasStabilizedDirection || endsTurn ? 0 : cue.key.hasPrefix("unknown") ? 0.8 : escalates ? 0 : 0.45
             guard now - candidateSince >= settle else { return false }
-            guard escalates || now - finishedAt >= 0.8 else { return false }
+            guard immediate || now - finishedAt >= 0.8 else { return false }
             guard cue.key != lastKey || elapsed >= 12 else { return false }
-            guard escalates || cue.hasStabilizedDirection || elapsed >= 3 else { return false }
+            guard immediate || cue.hasStabilizedDirection || elapsed >= 3 else { return false }
         }
         lastKey = cue.key
+        activeManual = manual
+        if !manual { lastAutomaticKey = cue.key }
         lastTime = now
         lastPriority = cue.speechPriority
         if cue.speechPriority >= 2 { lastCloseWarningAt = now }

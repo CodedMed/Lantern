@@ -34,29 +34,30 @@ filtering automatically but is never required to obtain a proximity reading.
 | Situation | Display / short speech |
 | --- | --- |
 | Forward band has usable depth and no close measured surface | FORWARD VIEW / “No close surface measured ahead.” |
-| Farther obstacle ahead | OBSTACLE AHEAD / approximate distance and “Slow down.” |
-| Close obstacle plus a reliably farther measured side | STOP · TURN LEFT/RIGHT / “Stop. Turn left/right and recheck.” |
+| Farther obstacle ahead | OBSTACLE AHEAD / “Obstacle ahead. Slow down.” |
+| Close obstacle plus a reliably farther measured side | TURN LEFT/RIGHT / “Turn left/right.” |
 | Very close sampled surface anywhere in the three bands | STOP / “Surface very close.” |
 | Side surface is close but the forward band is farther | CLOSE ON LEFT/RIGHT / “Keep clear.” |
 | Neither side is reliably measured around a close obstacle | STOP / “Obstacle ahead.” |
-| Close surfaces measured in all three bands | STOP · VIEW BLOCKED / “Close surfaces left, ahead and right.” |
+| Close surfaces measured in all three bands | STOP / “Close surfaces left, ahead and right.” |
 | Fresh depth is insufficient or the phone is pointed away | DEPTH UNCERTAIN / pause, or POINT CAMERA FORWARD |
 
-The arrow compares **visible surfaces**, not a certified route. A turn means
-stop and reorient **in place**, then check again before a step. Body orientation
-is not independently measured; the phone must remain aligned with the body.
-There is no instruction to sidestep or back into unseen space.
+The arrow compares **visible surfaces**. Turn slowly while keeping the phone
+aligned with the body, and follow the updated forward advice. A current side
+must keep meeting the distance and coverage checks throughout the turn. Body
+orientation is not independently measured. The output does not establish
+footing, body clearance, or a certified route.
 
 Pointing directly at a wall around 1.1 m away can correctly measure close
-surfaces in all three bands. **VIEW BLOCKED** distinguishes this from missing
-depth or a loading/scan step. It does not identify the material as a wall or
+surfaces in all three bands. The explanation beneath **STOP** distinguishes this
+from missing depth or a loading/scan step. It does not identify the material as a wall or
 claim the entire room is blocked. A turn target is highlighted only after a
 farther side meets the existing confidence, coverage and stability checks.
 Changes in the current view update advice automatically; there is no manual
 scan sequence or assumption about space outside the camera view.
 
-Prototype fixed thresholds: 2.3 m early warning (exit at 2.6 m), 1.4 m avoidance
-hint, 0.65 m close-surface STOP. These are **unvalidated engineering heuristics**,
+Prototype fixed thresholds: 2.3 m early warning (exit at 2.6 m), 1.6 m avoidance
+(exit at 2.0 m), 0.65 m close-surface STOP (release above 0.85 m). These are **unvalidated engineering heuristics**,
 not safe stopping distances or settings adapted to walking speed. Do not defer
 stopping until a threshold if a helper, mobility aid or your assessment indicates
 danger. A 2.2 m wall alone should warn rather than initiate a turn.
@@ -85,21 +86,33 @@ danger. A 2.2 m wall alone should warn rather than initiate a turn.
    A thin closer hit can override a dominant far wall. The big distance cards,
    warning distance and on-demand Distances speech all use closest samples;
    diagnostics distinguish patch distance from closest-hit distance.
-7. Require a usable forward patch plus ≥50% coverage, ≥35% non-floor coverage in
-   each height band and ≥20% in each lateral column. A side hint is stricter:
-   ≥75% overall coverage, ≥60% non-floor coverage per height band, ≥50% per
+7. Require a usable forward patch plus ≥50% non-floor coverage, ≥35% in
+   each height band and ≥20% in each lateral column. A new side hint is stricter:
+   ≥75% non-floor coverage overall, ≥60% per height band, ≥50% per
    lateral column, patch ≥2 m and ≥0.7 m farther than ahead, and **no individual
-   measured side hit closer than 1.8 m**. Unknown never becomes “far away.”
-   A measured side can be considered without measuring the opposite side.
-8. Prefer an already-confirmed side until a challenger has at least 0.5 m more
-   measured distance. A turn requires three distinct frames and ≥0.25 s of
-   consistent evidence; at a 10 Hz scheduling cap that normally needs a fourth
-   frame. Forward/warning output does not wait for a stationary floor/body scan.
-   Do not treat these constants as measured response time or phone FPS.
+   measured side hit closer than 1.8 m or less than 0.35 m farther than ahead**.
+   Unknown never becomes “far away.” Classified floor samples cannot inflate
+   this coverage. A measured side can be considered without measuring the opposite side.
+8. Prepare both sides during the approach warning. A new turn requires three
+   distinct frames and ≥0.25 s of consistent evidence (normally four frames at
+   the 10 Hz scheduling cap). Rank eligible sides using the smaller of their
+   current nearest hit and a running score, so old far readings cannot improve
+   today's score. Keep the chosen side while it remains eligible; a farther
+   reading on the opposite side alone does not reverse the answer. Retention
+   requires current non-floor coverage ≥65% overall, ≥50% per height band and
+   ≥40% per column, patch ≥2 m and ≥0.4 m farther than ahead. The hard 1.8 m
+   nearest-hit veto and 0.35 m relative-hit margin are unchanged. A recovered
+   previous side can briefly reconfirm before choosing its opposite.
+   The 1.6/2.0 m enter/exit band prevents small fluctuations from erasing turns.
+   Forward/warning output needs no stationary floor/body scan. These constants
+   are not measured response time, phone FPS or validated safety margins.
 9. Withdraw a turn on new close/unknown depth, side reversal, stale/out-of-order
-   frames, or changed heading. Current raw data drives advice; there is no old
+   frames, or an abrupt frame-to-frame pose jump (>25° or >0.35 m). Ordinary
+   gradual turns are expected and continue only with valid depth in every new
+   view. Clearing the forward obstacle releases the turn without an extra
+   rechecking STOP. Current raw data drives advice; there is no old
    clear-space map or display median hiding a new close hit. Frames expire after
-   0.5 s. A cumulative 10° change from an instructed heading forces rechecking.
+   0.5 s. A lost side is withdrawn before an opposite instruction can be issued.
 10. Process at most 10 times/second, keeping only scalar advice/debounce state.
     No queued or retained ARFrames, RGB images, depth maps, room map or uploads.
     “Last analysis pass” measures local processing wall time, **not sensor-to-
@@ -114,13 +127,15 @@ road crossing.
 ## Speech
 
 - Short action-first messages use Apple's on-device speech synthesizer.
-- Normal sentences finish; only a new STOP revokes a lower-priority obsolete
-  instruction immediately. Turn hints do not interrupt ordinary speech.
+- A confirmed two-word turn can interrupt routine commentary. STOP has higher
+  priority than either turn. New forward advice cancels an obsolete spoken turn.
+  Ordinary distance fluctuations never restart the same instruction.
 - No utterance backlog: only the latest advice is offered. Actual completion
-  callbacks and a 0.8 s gap pace speech. Persistent semantic states can remind
+  callbacks and a 0.8 s gap pace routine speech. Persistent semantic states can remind
   after 12 s; decimal distance changes do not restart narration.
 - Repeat waits for idle speech. Distances speaks the three **current closest
-  sampled** readings, including Unknown, after checking freshness.
+  sampled** readings, including Unknown, after checking freshness. An unchanged
+  automatic turn lets that requested readout finish; a new STOP still interrupts.
 - A speed slider is available. Apple's assistive-technology voice/speed settings
   take precedence when VoiceOver is enabled. Stop, mute and background cancel speech.
 
@@ -164,27 +179,55 @@ swift build --package-path native/LanternLiDAR --target DepthCore
 
 Tests cover fresh/stale/invalid depth, floor filtering, thin hits vs far patches,
 coverage across height and lateral bands, left/right selection, unknown-side
-rejection, close warnings, temporal stability, cumulative turns, speech completion
-and immediate STOP cancellation. The live guide is checked over all 343
+rejection, close warnings, temporal stability, ordinary turns versus abrupt pose
+jumps, speech completion and immediate STOP cancellation. The live guide is checked over all 343
 combinations of seven synthetic distances across three regions. A synthetic
 portrait-camera fixture checks ray visibility and projection round trips; it is
 not a measured iPhone FOV or accuracy result.
 
+### Reproducible stability comparison
+
+`Tools/GuidanceReplay.swift` feeds identical synthetic sequences to the guide.
+Six initial frames establish a left choice, then changes in the returned action
+are counted over the remaining frames. Comparing baseline commit `8f0e34c` with
+this revision on October 24, 2026:
+
+| Synthetic sequence | Frames after setup | Previous action changes | Revised action changes |
+| --- | ---: | ---: | ---: |
+| Forward distance alternates 1.38 / 1.42 m; left remains usable | 120 | 119 | 0 |
+| Opposite side alternately looks farther; both remain usable | 80 | 30 | 0 |
+| Gradual 30° turn followed by a newly open forward view | 25 | 5 | 1 |
+
+The final change in the third replay is the expected left-to-forward transition.
+These measure decision stability on synthetic data, **not** real-world accuracy,
+spoken-message counts, sensor latency or safe walking. Separate tests require
+immediate withdrawal for a new close hit, lost/invalid depth or an obstructed side.
+
+From this directory, with full Xcode selected:
+
+```sh
+xcrun swiftc -O Sources/DepthCore/*.swift Tools/GuidanceReplay.swift -o /tmp/lantern-guidance-replay
+/tmp/lantern-guidance-replay
+```
+
 ## Physical checks still required
 
 Earlier iPhone 15 Pro Max tests confirmed live wall readings changing with
-distance and improved sentence completion. User feedback rejected the old
-floor-scan interaction. Neither observation validates this replacement.
+distance, improved sentence completion, and the icon/blocked-wall explanation.
+The latest user feedback identified unstable direction decisions. Those earlier
+observations do not validate the revised avoidance behavior.
 
 For the new version, test **stationary with a sighted helper**:
 
 - Start and face an opaque surface around 2 m away. Confirm a warning appears
   without any floor/room scan. Record time to first reading and actual errors.
 - Stay still while a helper brings an opaque surface closer. Confirm a STOP and,
-  if one side is well measured, the correct relative stop-and-turn hint. Do not
+  if one side is well measured, the correct relative turn hint. Do not
   test by walking into an obstacle.
 - Remove/obscure a side: its hint must withdraw, not retain old advice.
 - Reorient in place; obsolete turns must cancel before new advice.
+- Make small distance changes around 1.6 m and gently change heading: one valid
+  side should persist. Bring the obstacle onto that side: its arrow must withdraw.
 - Check close side surfaces, thin objects, dark/reflective materials, low and
   overhead hazards, stairs/drop-offs, and out-of-view limitations under supervision.
 - Check permission denial, mute, speed, Repeat, Distances, Stop, background and
