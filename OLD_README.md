@@ -1,10 +1,6 @@
 # Lantern
 Computer-Vision surrounding identifying app, helping disabled through navigation.
 
-steps to run:
-1. activate venv --> run "lanternenv\Scripts\activate" in terminal
-2. navigate to lanternv1 expo project --> cd lanternv1
-3. start expo project --> npx expo start
-    if on public wifi, do npx expo start --tunnel instead
-
-control c to stop app
+Historical project notes. The duplicate Expo starter and committed Windows virtual
+environment are not the current app. See README.md for the supported browser demo
+and separate native development instructions. Python is not needed to run Lantern.

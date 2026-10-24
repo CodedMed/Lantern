@@ -17,6 +17,11 @@ out/
 es/
 lib/
 coverage/
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
 
 # IDE and OS files
 .vscode/
@@ -31,8 +36,20 @@ Thumbs.db
 .env.test.local
 .env.production.local
 
+# Python virtual environments
+lanternenv/
+lanternenv2/
+venv/
+env/
+
+# Expo
+.expo/
+.expo-shared/
+web-build/
+# Historical duplicate starter, retained in Git history rather than the app tree.
+/lanternv1/
+
 # npm package manager files
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 

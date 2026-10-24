@@ -1,0 +1,76 @@
+name: Native LiDAR checks
+on:
+  push:
+    paths: ["native/LanternLiDAR/**", ".github/workflows/lidar.yml"]
+  pull_request:
+    paths: ["native/LanternLiDAR/**", ".github/workflows/lidar.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lidar-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios-build:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Report selected Apple SDKs
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcodebuild -showsdks
+      - name: Test sensor-independent depth processing
+        run: swift test --package-path native/LanternLiDAR --xunit-output "$RUNNER_TEMP/depth-core-tests.xml"
+      - name: Select an installed iPhone simulator
+        id: simulator
+        run: node native/LanternLiDAR/ci/select-simulator.mjs
+      - name: Build app and run depth tests on iOS simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project native/LanternLiDAR/LanternLiDAR.xcodeproj \
+            -scheme LanternLiDAR -configuration Debug -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}' \
+            -derivedDataPath "$RUNNER_TEMP/lantern-simulator" \
+            -resultBundlePath "$RUNNER_TEMP/lantern-simulator.xcresult" \
+            CODE_SIGNING_ALLOWED=NO test | tee "$RUNNER_TEMP/lantern-simulator.log"
+      - name: Compile release for physical iOS devices without signing
+        run: |
+          set -o pipefail
+          xcodebuild -project native/LanternLiDAR/LanternLiDAR.xcodeproj \
+            -scheme LanternLiDAR -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/lantern-device" \
+            CODE_SIGNING_ALLOWED=NO build | tee "$RUNNER_TEMP/lantern-device.log"
+      - name: Save test and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-lidar-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/depth-core-tests.xml
+            ${{ runner.temp }}/lantern-simulator.xcresult
+            ${{ runner.temp }}/lantern-simulator.log
+            ${{ runner.temp }}/lantern-device.log
+          if-no-files-found: ignore
+          retention-days: 7
+  website-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run test:web
+      - run: npm run build:web

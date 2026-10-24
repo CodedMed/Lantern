@@ -1,0 +1,103 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+        300000000000000000000001 = {isa = PBXBuildFile; fileRef = 300000000000000000000002; };
+        300000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+        100000000000000000000008 = {isa = PBXBuildFile; fileRef = 100000000000000000000006; };
+        100000000000000000000009 = {isa = PBXBuildFile; fileRef = 100000000000000000000007; };
+        100000000000000000000016 = {isa = PBXBuildFile; productRef = 100000000000000000000015; };
+        200000000000000000000001 = {isa = PBXBuildFile; fileRef = 200000000000000000000002; };
+        200000000000000000000003 = {isa = PBXBuildFile; productRef = 100000000000000000000015; };
+        200000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/DepthCoreTests/DepthAnalysisTests.swift; sourceTree = SOURCE_ROOT; };
+        200000000000000000000004 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LanternDepthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        100000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanternLiDARApp.swift; sourceTree = "<group>"; };
+        100000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LidarController.swift; sourceTree = "<group>"; };
+        100000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LanternLiDAR.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        100000000000000000000002 = {isa = PBXGroup; children = (100000000000000000000003, 200000000000000000000002, 100000000000000000000004); sourceTree = "<group>"; };
+        100000000000000000000003 = {isa = PBXGroup; children = (300000000000000000000002, 100000000000000000000006, 100000000000000000000007); path = App; sourceTree = "<group>"; };
+        100000000000000000000004 = {isa = PBXGroup; children = (100000000000000000000005, 200000000000000000000004); name = Products; sourceTree = "<group>"; };
+        10000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000008, 100000000000000000000009); runOnlyForDeploymentPostprocessing = 0; };
+        10000000000000000000000B = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000016); runOnlyForDeploymentPostprocessing = 0; };
+        10000000000000000000000C = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (300000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+        200000000000000000000005 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (200000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+        200000000000000000000006 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (200000000000000000000003); runOnlyForDeploymentPostprocessing = 0; };
+        200000000000000000000007 = {isa = PBXNativeTarget;
+            buildConfigurationList = 200000000000000000000008;
+            buildPhases = (200000000000000000000005, 200000000000000000000006);
+            buildRules = (); dependencies = (); name = LanternDepthTests;
+            packageProductDependencies = (100000000000000000000015);
+            productName = LanternDepthTests; productReference = 200000000000000000000004;
+            productType = "com.apple.product-type.bundle.unit-test";
+        };
+        10000000000000000000000D = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = 10000000000000000000000F;
+            buildPhases = (10000000000000000000000A, 10000000000000000000000B, 10000000000000000000000C);
+            buildRules = (); dependencies = (); name = LanternLiDAR;
+            packageProductDependencies = (100000000000000000000015);
+            productName = LanternLiDAR; productReference = 100000000000000000000005;
+            productType = "com.apple.product-type.application";
+        };
+        100000000000000000000001 = {
+            isa = PBXProject;
+            attributes = {BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 1600; TargetAttributes = {10000000000000000000000D = {CreatedOnToolsVersion = 16.0; }; }; };
+            buildConfigurationList = 10000000000000000000000E;
+            compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0;
+            knownRegions = (en, Base); mainGroup = 100000000000000000000002;
+            packageReferences = (100000000000000000000014);
+            productRefGroup = 100000000000000000000004;
+            projectDirPath = ""; projectRoot = ""; targets = (10000000000000000000000D, 200000000000000000000007);
+        };
+        100000000000000000000010 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; ONLY_ACTIVE_ARCH = YES; ENABLE_TESTABILITY = YES; }; name = Debug; };
+        100000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+        100000000000000000000012 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                INFOPLIST_KEY_CFBundleDisplayName = Lantern;
+                CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_KEY_NSCameraUsageDescription = "Lantern uses the rear camera and LiDAR to estimate nearby surface distances on this device. No images or depth are uploaded.";
+                INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+                INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+                INFOPLIST_KEY_UIRequiresFullScreen = YES;
+                INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+                INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait;
+                INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+                MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.lantern.lidar.demo;
+                PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = targeted; TARGETED_DEVICE_FAMILY = "1,2";
+            }; name = Debug;
+        };
+        100000000000000000000013 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                INFOPLIST_KEY_CFBundleDisplayName = Lantern;
+                CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_KEY_NSCameraUsageDescription = "Lantern uses the rear camera and LiDAR to estimate nearby surface distances on this device. No images or depth are uploaded.";
+                INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+                INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+                INFOPLIST_KEY_UIRequiresFullScreen = YES;
+                INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+                INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait;
+                INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+                MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.lantern.lidar.demo;
+                PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = targeted; TARGETED_DEVICE_FAMILY = "1,2";
+            }; name = Release;
+        };
+        10000000000000000000000E = {isa = XCConfigurationList; buildConfigurations = (100000000000000000000010, 100000000000000000000011); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        10000000000000000000000F = {isa = XCConfigurationList; buildConfigurations = (100000000000000000000012, 100000000000000000000013); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        200000000000000000000008 = {isa = XCConfigurationList; buildConfigurations = (200000000000000000000009, 20000000000000000000000A); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        200000000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.lantern.lidar.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SKIP_INSTALL = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        20000000000000000000000A = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.lantern.lidar.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SKIP_INSTALL = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+        100000000000000000000014 = {isa = XCLocalSwiftPackageReference; relativePath = "."; };
+        100000000000000000000015 = {isa = XCSwiftPackageProductDependency; package = 100000000000000000000014; productName = DepthCore; };
+    };
+    rootObject = 100000000000000000000001;
+}
